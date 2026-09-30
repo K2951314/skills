@@ -1,86 +1,98 @@
-# 包格式与校验
+# 包格式与校验（v1，已实现）
 
-## 文件名
+零第三方依赖：Python 标准库（`zipfile` + `hashlib`/`hmac`）。业务机只要有 Python 3.11+ 就能导能导能入——不依赖 openssl、tar、7-Zip。
 
-```text
-<项目短名>-<kind>-<时间戳>.tar.gz.enc
-```
+威胁模型（诚实声明）：防「U 盘丢失 / 网盘同步泄露 / 误拷」。口令强度是唯一屏障，PBKDF2 120k 轮抗离线暴力，HMAC 抗篡改。它不替代本机磁盘加密，不提供前向保密，也不防拿到你机器的人。
 
-`kind` 只能是 `workspace` 或 `server`。时间戳格式 `YYYYMMDD-HHMMSS`，用打包机器的本地时间，并在 manifest 里带时区。示例：
+## 容器布局
 
 ```text
-smart-quotation-workspace-20260930-131500.tar.gz.enc
-smart-quotation-server-20260930-131500.tar.gz.enc
+blob = b"OCMIG1"(6) || salt(16) || mac(32) || cipher
+cipher = payload_zip XOR keystream
+keystream = sha256(enc_key || counter_le64) 分块拼接（计数器模式）
+dk = PBKDF2-HMAC-SHA256(passphrase, salt, 120_000, dklen=64)
+enc_key = dk[:32]；mac_key = dk[32:]
+mac = HMAC-SHA256(mac_key, b"OCMIG1" || salt || cipher)
+payload_zip = manifest.json + 逐文件 payload（正斜杠相对路径，ZIP_DEFLATED）
 ```
 
-文件名只是提示。导入以包内 manifest 和内容标记为准，不信文件名。
+解密顺序（失败即停，目标零改动）：
 
-## 落点
+1. 验 HMAC —— 口令错或密文被改，此处失败，退出码 4；
+2. 解密得 zip；
+3. 解 zip、逐成员预检（见下）；
+4. 逐文件 sha256 与 manifest 清单对账，退出码 5。
 
-默认 `<项目根>/_migrate/`。项目已有等价目录时沿用，不要新建第二套。智能询价用 `_换机/`。
+随机 salt 保证同一口令两次导出的密文不同，无跨包密钥流复用。
 
-该目录和 `*.enc` 必须出现在忽略规则里。导出前检查；没有就先补规则再打包。加密包躺在仓库根目录时，一次 `git add -A` 就会把密钥和数据库提交上去。
-
-## 包内布局
+## 文件名与落点
 
 ```text
-manifest.json          # 不含密钥值
-payload/...            # 与清单 path 对应的相对路径
+<project>-<kind>-<YYYYmmdd-HHMMSS>.enc
 ```
 
-`manifest.json` 字段：
+`kind` 只有 `workspace` / `server`。落点 `<项目根>/<artifacts_dir>/`（manifest 里声明，智能询价沿用 `_换机`，默认 `.migrate`）。该目录与 `*.enc` 必须在项目忽略规则里；导出前检查，没有先补规则再打包。备份落在 `<artifacts_dir>/backup-<时间戳>/`，事务日志在 `<artifacts_dir>/journal/`。
+
+## 包内 manifest.json
 
 ```json
 {
   "format": 1,
   "kind": "workspace",
   "project": "smart-quotation",
-  "created_at": "2026-09-30T13:15:00+08:00",
+  "engine": "1.0.0",
+  "created_at": "2026-09-30T22:40:23+08:00",
   "hostname_hint": "dev-pc",
   "items": [
-    {"id": "env-local", "path": ".env", "bytes": 1204, "sha256": "<hex>", "class": "required"}
+    {"id": "env-file", "path": ".env", "bytes": 1204, "sha256": "<hex>",
+     "class": "required", "sensitive": true, "item_type": "file"}
   ],
-  "rebuild": ["python -m venv .venv", "pip install -r requirements.txt"],
-  "excluded_note": ["node_modules", ".venv", "logs"]
+  "rebuild": ["python -m venv .venv"],
+  "verify": ["python -m pytest tests/ -q"]
 }
 ```
 
-`sha256` 针对进包前的明文文件。数据库伴随文件各自一条。服务器转储的 `path` 用包内名（如 `sqdb.dump`）。manifest 在加密包内，可以保留当次确认过的主机别名，不要保留完整连接串。`remote_path` 不写入可被 git 提交的文件。
+`sha256` 针对**进包的字节**（sqlite 项是对快照字节算的，不是原库文件）。目录/glob 项展开为逐文件条目。不含任何密钥值。
 
-## 加密
+## 导出流程
 
-- 算法：`openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000`
-- 口令来自环境变量或 stdin。禁止 `-pass pass:...` 出现在进程参数里。
-- 口令至少 12 位，且不能与项目名、主机名相同。导出时输入两次。
-- 口令不进包、不进清单、不进对话。丢了无法找回，导出前必须说明。
-- 明文 tar、明文 env、明文 dump 不落盘。打包用 `tar -czf - | openssl enc ...`，导入反过来。临时目录用 `trap` 或 `try/finally` 删除，中途失败也要删。
+1. `plan` 解析 manifest → 逐条目展开、算 sha256；`required` 且 `on_missing=block` 缺失 → 中止（退出码 1）。
+2. `sqlite` 项走在线 backup API 生成崩溃一致快照（`Connection.backup` + `serialize`），全程内存；**-wal/-shm/-journal 不发货**。
+3. 内存组 zip → 加密 → 写 `.enc`。
+4. **导出后回读**：解密 → 解 zip → 逐文件重算 sha256 对账。不一致就删掉这个 `.enc` 并报错——不留「看起来成功」的坏包。
 
-## 导出校验
+## 导入流程
 
-不过就不出包。
+1. 验 HMAC → 解密 → 解 zip。
+2. **成员预检（落盘前）**：拒绝 `..`、绝对路径、盘符、UNC、反斜杠形态、NUL、`.` 段、目录条目、符号链接成员、清单外成员、超限（成员 ≤10000、单文件 ≤1GiB、清单对账）。
+3. 冲突决策（默认 `skip`）：`skip` 只写目标处不存在的；`keep-both` 写 `原名.incoming-<时间戳>`；`overwrite` 先备份再替换；`ask` 逐项交互。git 已跟踪文件一律跳过。不在 `merge.include` 白名单的路径一律跳过。
+4. **SQLite 特殊规则**：恢复库前，把目标旁已存在的 `-wal`/`-shm`/`-journal` 先备份再删除——旧 WAL 帧重放进新库会直接损坏数据库（zk-ai 真实事故）。
+5. 事务式写入：临时文件 → fsync → sha256 → `os.replace` 原子替换；JSONL journal 全程记录。任一步失败，**回滚本次导入已落盘的文件**（有备份从备份恢复，无备份删除），之后可 `import --recover <journal>` 重放恢复。
+6. 收尾打印：写入/跳过/保留双方计数、备份目录、journal 路径、包内 `rebuild`/`verify` 命令。验证失败就停，不自动重导。
 
-1. 每个 `required` 且 `on_missing: block` 的项存在，体积大于 0。
-2. 清单外没有把 `refuse` 类目录打进去。抽查包内路径前缀。
-3. 加密完成后立刻解密到管道，重算每个文件的 sha256，与 manifest 一致。失败就删除 `.enc`。
-4. 服务器 dump 非空，且文件头符合格式。PostgreSQL 自定义格式以 `PGDMP` 开头。空 dump 一律失败。
-5. 对话里只报告项数、id、体积、是否敏感、总大小、输出路径。不报告文件内容和环境变量的值。
+## 退出码（.cmd 启动器据此分支）
 
-## 导入校验
+| 码 | 含义 |
+|---|---|
+| 0 | 成功 |
+| 1 | 一般错误 |
+| 2 | 用法/输入错误 |
+| 3 | 目标冲突（已存在被跳过；.cmd 据此提供 `--on-conflict overwrite` 重试） |
+| 4 | 口令错误或包被篡改（HMAC 失败） |
+| 5 | 完整性失败（解密后哈希不符） |
+| 6 | 平台依赖缺失 |
+| 7 | 安全拒绝（server 包禁 merge 等） |
+| 8 | 不支持（schema 版本过高等） |
 
-不过就不覆盖。
+## 旧格式包（legacy）
 
-1. 解密失败就停。不要重试超过 3 次。
-2. 先核对项数与 sha256，再谈覆盖。校验失败的项不写入目标。
-3. 包内路径必须是相对路径。拒绝 `..`、绝对路径、盘符、指向包外的符号链接。
-4. `kind=server` 的包禁止合并进 git 工作区。
-5. 导入后再算一次 sha256。不一致就从备份恢复该文件，并报告哪一项失败。
+智能询价历史包是 `openssl aes-256-cbc -pbkdf2 -iter 200000` 的平铺 tar，文件头为 `Salted__`。legacy 导入路径（阶段 4 落地）只读兼容：
 
-## 对照表
+- 按内容标记判型（`sqdb.dump`/`etc-sq.env` → server；`.env`/`keys` → workspace；两类都有保守判 server）；
+- 过同一套成员预检与事务写入；
+- 报告里明示「旧包无 HMAC 认证」；
+- 旧包不强制新口令长度规则。
 
-导出结束和导入结束都打这张表。列可以少，不能多报内容。
+## 汇报脱敏
 
-| id | 类别 | 体积 | sha256 前 8 位 | 结果 |
-|---|---|---|---|---|
-| env-local | required | 1.2 KB | a1b2c3d4 | 已写入 / 已跳过 / 失败已回滚 |
-
-哈希前 8 位只供人眼对照是不是同一份。安全边界是包内完整哈希。
+只出现：id、类别、体积、sha256 前 8 位、存在性、命令结果。禁止出现：口令、env 值、PEM、token、连接串密码、`-pass pass:`。测试用假密钥值断言输出不含它们。
