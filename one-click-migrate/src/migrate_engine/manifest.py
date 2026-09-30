@@ -50,6 +50,8 @@ class Item:
     # server 作用域专用
     remote_path: str | None = None
     capture: str | None = None
+    pg_user: str | None = None
+    pg_db: str | None = None
 
 
 @dataclass
@@ -69,7 +71,7 @@ class Manifest:
 # ── 校验（与 schemas/manifest.v1.schema.json 对齐，测试钉死一致性） ───────
 
 _CLASSES = {"required", "recommended", "archive"}
-_ITEM_TYPES = {"file", "dir", "glob", "sqlite"}
+_ITEM_TYPES = {"file", "dir", "glob", "sqlite", "pg"}
 _SCOPES = {"workspace", "server", "both"}
 _ON_MISSING = {"block", "warn", "skip"}
 _REVIEW = {"confirmed", "needs-review", "skipped_by_user"}
@@ -126,7 +128,8 @@ def validate_data(data: dict) -> tuple[list[str], Manifest]:
     items: list[Item] = []
     seen_ids: set[str] = set()
     item_fields = {"id", "path", "class", "item_type", "scope", "on_missing",
-                   "sensitive", "review_status", "note", "remote_path", "capture"}
+                   "sensitive", "review_status", "note", "remote_path", "capture",
+                   "pg_user", "pg_db"}
     for i, raw in enumerate(items_data):
         if not isinstance(raw, dict):
             problems.append(f"items[{i}] 必须是表")
@@ -163,8 +166,11 @@ def validate_data(data: dict) -> tuple[list[str], Manifest]:
             problems.append(f"[{item_id}] review_status 必须是 {sorted(_REVIEW)} 之一，当前 {review!r}")
 
         remote_path = raw.get("remote_path")
-        if scope in {"server", "both"} and not remote_path:
-            problems.append(f"[{item_id}] scope={scope} 必须提供 remote_path")
+        capture_for_check = raw.get("capture")
+        if (scope in {"server", "both"} and not remote_path
+                and capture_for_check != "pg_dump"):
+            problems.append(f"[{item_id}] scope={scope} 必须提供 remote_path"
+                            "（capture=pg_dump 用 pg_db 代替）")
         if remote_path is not None and (not isinstance(remote_path, str) or not remote_path.strip()):
             problems.append(f"[{item_id}] remote_path 必须是非空字符串")
             remote_path = None
@@ -172,6 +178,16 @@ def validate_data(data: dict) -> tuple[list[str], Manifest]:
         capture = raw.get("capture")
         if capture is not None and capture not in _CAPTURES:
             problems.append(f"[{item_id}] capture 必须是 {sorted(_CAPTURES)} 之一，当前 {capture!r}")
+
+        pg_user = raw.get("pg_user")
+        pg_db = raw.get("pg_db")
+        if capture == "pg_dump" and not pg_db:
+            problems.append(f"[{item_id}] capture=pg_dump 必须提供 pg_db（库名）")
+        for fname, fvalue in (("pg_user", pg_user), ("pg_db", pg_db)):
+            if fvalue is not None and (not isinstance(fvalue, str) or not fvalue.strip()):
+                problems.append(f"[{item_id}] {fname} 必须是非空字符串")
+        if capture == "pg_dump":
+            pg_user = pg_user or "postgres"
 
         sensitive = raw.get("sensitive", False)
         if not isinstance(sensitive, bool):
@@ -186,6 +202,7 @@ def validate_data(data: dict) -> tuple[list[str], Manifest]:
             id=item_id, path=path, cls=cls, item_type=item_type, scope=scope,
             on_missing=on_missing, sensitive=sensitive, review_status=review,
             note=note, remote_path=remote_path, capture=capture,
+            pg_user=pg_user, pg_db=pg_db,
         ))
 
     profiles = data.get("profiles", {})

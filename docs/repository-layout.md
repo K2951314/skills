@@ -37,11 +37,16 @@ my-skills/
 ├── scripts/                   挂载脚本。不是技能
 │   ├── link-skills.ps1
 │   └── link-skills.sh
-└── <skill-name>/              一个技能
+└── <skill-name>/              一个技能，可单独拷走使用
     ├── SKILL.md               唯一入口
-    ├── references/            按需阅读的规则，可选
-    ├── scripts/               该技能专用的确定性脚本，可选
-    └── assets/                输出用的模板，可选
+    ├── references/            按需阅读的规则
+    ├── schemas/               声明文件的契约（如 manifest.v1.schema.json）
+    ├── src/                   引擎代码（技能自用；如 one-click-migrate）
+    │   └── <package>/…
+    ├── scripts/               该技能的启动器（.sh 走 LF，.cmd 走 ASCII+CRLF）
+    ├── tests/                 unit / security / integration / platform
+    ├── examples/              脱敏示例（无密钥值、无服务器地址）
+    └── templates/             草稿模板
 ```
 
 仓库根禁止放 `SKILL.md`。否则整个仓库会被注册成一个叫 `my-skills` 的技能。

@@ -45,9 +45,9 @@
             "default": "required"
           },
           "item_type": {
-            "enum": ["file", "dir", "glob", "sqlite"],
+            "enum": ["file", "dir", "glob", "sqlite", "pg"],
             "default": "file",
-            "description": "sqlite 走 backup API 一致性快照；sidecar 不发货、导入时清除。"
+            "description": "sqlite 走 backup API 一致性快照；sidecar 不发货、导入时清除。pg = PostgreSQL 转储采集。"
           },
           "scope": {
             "enum": ["workspace", "server", "both"],
@@ -70,6 +70,15 @@
           "capture": {
             "enum": ["file", "pg_dump", "command"],
             "description": "server 条目的采集方式。"
+          },
+          "pg_user": {
+            "type": "string",
+            "default": "postgres",
+            "description": "capture=pg_dump 时执行 pg_dump 的系统用户。"
+          },
+          "pg_db": {
+            "type": "string",
+            "description": "capture=pg_dump 必填：数据库名。"
           }
         }
       }

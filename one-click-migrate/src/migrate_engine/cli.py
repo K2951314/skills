@@ -32,10 +32,12 @@ from .manifest import (
 )
 from . import platform as plat
 from .crypto import CryptoError
+from .env_audit import audit as audit_env
 from .passphrase import PassphraseAborted, obtain as obtain_passphrase
 from .pack import ExportError, KIND_WORKSPACE, export_package
 from .report import Report, human_size, sha8
 from .scan import resolve_item, snapshot_files
+from .server import ServerError, build_server_package, capture_server, upload_stage, validate_target
 from .unpack import (
     ON_CONFLICT_MODES,
     PackageError,
@@ -176,6 +178,10 @@ def cmd_plan(args) -> Report:
     blocking_missing = False
 
     for item in items:
+        if item.scope == "server":
+            rep.say(f"  [服务器条目] {item.id}（{item.remote_path or item.path}）不在本机解析，"
+                    "采集用 server export。")
+            continue
         resolved = resolve_item(root, item)
         if resolved.missing:
             rep.row(id=item.id, cls=item.cls, size="-",
@@ -276,6 +282,19 @@ def cmd_export(args) -> Report:
     rep.say(f"  产物：{result.path}（{human_size(result.bytes)}，已加密）")
     for name in result.missing:
         rep.warn(f"{name} 不存在，未进包（on_missing 非 block）。")
+
+    # 导出后键名审计：本机包里「缺什么、什么是死键、哪些只应在服务器上」
+    if manifest.env_audit:
+        result_audit = audit_env(root, manifest.env_audit)
+        rep.set_data("audit_missing", sorted(result_audit.missing))
+        rep.set_data("audit_dead", sorted(result_audit.dead))
+        if result_audit.scan_failed:
+            rep.warn("环境审计没扫到代码里的变量读取（code_dirs？），按 fail-closed 处理。")
+        for key in sorted(result_audit.missing):
+            rep.warn(f"代码读了 {key} 但本机没配——只换电脑可以不带，重建服务器前必须补。")
+        for key in sorted(result_audit.dead):
+            rep.warn(f"{key} 是死键（没代码读），确认后可删。")
+
     rep.say("")
     rep.say(f"  包内 {len(result.entries)} 个文件。口令另行保管（丢了包永远解不开），")
     rep.say("  不要把口令和包放同一处。")
@@ -308,9 +327,11 @@ def cmd_verify(args) -> Report:
     rep.set_data("kind", info["kind"])
     rep.set_data("project", info.get("project"))
     rep.set_data("created_at", info.get("created_at"))
+    if info.get("legacy"):
+        rep.say("  ⚠ 旧格式包：无 HMAC 认证、无包内清单，仅成员预检 + 逐文件 sha256。")
     rep.say(f"  类型：{info['kind']}    项目：{info.get('project')}")
     rep.say(f"  创建：{info.get('created_at')}    引擎：{info.get('engine')}")
-    rep.say(f"  清单 {len(info['items'])} 项，全部通过 HMAC 认证与逐文件 sha256 校验。")
+    rep.say(f"  清单 {len(info['items'])} 项，逐文件 sha256 校验通过。")
     for record in info["items"]:
         rep.row(id=record["id"], cls=record.get("class", "-"),
                 size=human_size(record["bytes"]), sha256_8=sha8(record["sha256"]),
@@ -430,6 +451,145 @@ def info_lookup(info: dict, name: str) -> str:
     return "-"
 
 
+# ── audit / server ──────────────────────────────────────────────────────
+
+
+def cmd_audit(args) -> Report:
+    """环境变量键名审计：只出键名，绝不出值。"""
+    rep = Report(json_mode=bool(getattr(args, "json", False)), title="环境变量键名审计")
+    root = _root_of(args)
+    try:
+        manifest = load_manifest(root)
+    except ManifestError as exc:
+        rep.error(str(exc))
+        rep.finish(exc.exit_code)
+        return rep
+    result = audit_env(root, manifest.env_audit)
+    rep.set_data("missing", sorted(result.missing))
+    rep.set_data("missing_required", sorted(result.missing_required))
+    rep.set_data("dead", sorted(result.dead))
+    rep.set_data("server_only_declared", sorted(result.server_only))
+    if result.scan_failed:
+        rep.error("没扫到任何代码里的环境变量读取——code_dirs 配错了？"
+                  "fail-closed：不报「正常」。")
+        rep.finish(EXIT_ERROR)
+        return rep
+    for key in sorted(result.missing_required):
+        rep.error(f"缺少生产必需的环境变量：{key}")
+    for key in sorted(result.missing - result.missing_required):
+        rep.warn(f"代码读了 {key}，但 .env 与部署机清单里都没有——换机会缺它。")
+    for key in sorted(result.dead):
+        rep.warn(f"{key} 配了但没代码读——死键，确认后可删。")
+    for key in sorted(result.server_only):
+        rep.say(f"  [提醒] {key} 只应在部署机上（本机 .env 里也有，注意别外发）。")
+    rep.say(f"  代码读取 {len(result.code_keys)} 个键；env 文件 {len(result.env_keys)} 个键。")
+    if not (result.missing or result.dead):
+        rep.say("  没有缺失、没有死键。")
+    rep.finish(EXIT_OK)
+    return rep
+
+
+def _server_hints(root: Path) -> dict[str, dict]:
+    """从本机 manifest 取 server 条目的 remote_path/pg_db，供上传命令用。"""
+    try:
+        manifest = load_manifest(root)
+    except ManifestError:
+        return {}
+    hints: dict[str, dict] = {}
+    for item in manifest.items:
+        if item.scope in {"server", "both"}:
+            hints[item.path] = {"remote_path": item.remote_path, "pg_db": item.pg_db}
+    return hints
+
+
+def cmd_server_export(args) -> Report:
+    rep = Report(json_mode=bool(getattr(args, "json", False)), title="服务器资产采集")
+    root = _root_of(args)
+    target = validate_target(args.target)
+    try:
+        manifest = load_manifest(root)
+        items = [i for i in select_items(manifest, getattr(args, "profile", None))
+                 if i.scope in {"server", "both"}]
+        if not items:
+            rep.error("manifest 里没有 scope=server/both 的条目。")
+            rep.finish(EXIT_USAGE)
+            return rep
+        passphrase = obtain_passphrase(confirm=True, source_file=args.passphrase_file)
+    except ManifestError as exc:
+        rep.error(str(exc))
+        rep.finish(exc.exit_code)
+        return rep
+    except PassphraseAborted as exc:
+        rep.say(str(exc))
+        rep.finish(EXIT_REFUSED)
+        return rep
+
+    try:
+        result = capture_server(target, manifest, items)
+        out = build_server_package(result, manifest, passphrase, root / manifest.artifacts_dir)
+    except (ServerError, PassphraseAborted) as exc:
+        rep.error(str(exc))
+        rep.finish(getattr(exc, "exit_code", EXIT_ERROR))
+        return rep
+
+    rep.set_data("package", str(out))
+    rep.set_data("target_alias", target)
+    rep.say(f"  目标：{target}")
+    rep.say(f"  产物：{out}（{human_size(out.stat().st_size)}，已加密）")
+    for note in result.notes:
+        rep.warn(note)
+    rep.say("  版本锚点（新机照齐）：")
+    rep.lines.extend(f"    {line}" for line in result.metadata.splitlines() if line.strip())
+    rep.say("")
+    rep.say("  ⚠ 这是服务器包：含数据库转储与系统配置明文密钥，禁止合并进项目仓库。")
+    rep.say("  换服务器：migrate server import <包> --target user@新机")
+    rep.finish(EXIT_OK)
+    return rep
+
+
+def cmd_server_import(args) -> Report:
+    rep = Report(json_mode=bool(getattr(args, "json", False)), title="上传到新服务器（只进暂存）")
+    path = Path(args.package).expanduser()
+    if not path.is_file():
+        rep.error(f"找不到迁移包：{path}")
+        rep.finish(EXIT_USAGE)
+        return rep
+    target = validate_target(args.target)
+    try:
+        passphrase = obtain_passphrase(confirm=False, source_file=args.passphrase_file,
+                                       enforce_min=False)
+    except PassphraseAborted as exc:
+        rep.say(str(exc))
+        rep.finish(EXIT_REFUSED)
+        return rep
+    try:
+        commands = upload_stage(path, passphrase, target,
+                                hints=_server_hints(root))
+    except (ServerError, PackageError, CryptoError) as exc:
+        rep.error(str(exc))
+        rep.finish(getattr(exc, "exit_code", EXIT_ERROR))
+        return rep
+    rep.set_data("target_alias", target)
+    rep.say(f"  已上传到 {target} 的暂存目录。接下来人工执行（引擎不自行提权）：")
+    rep.lines.extend(f"  {cmd}" for cmd in commands)
+    rep.say("")
+    rep.say("  必须改的值：数据库连接串、对外访问来源（ALLOW_ORIGINS 之类）。")
+    rep.say("  换了 IP/域名：已发链接全部失效，要重发（token 在库里，不用重建账号）。")
+    rep.finish(EXIT_OK)
+    return rep
+
+
+def _cmd_server(args) -> Report:
+    if args.action == "export":
+        return cmd_server_export(args)
+    if not args.package:
+        rep = Report(json_mode=bool(getattr(args, "json", False)))
+        rep.error("server import 需要迁移包路径：migrate server import <包> --target user@host")
+        rep.finish(EXIT_USAGE)
+        return rep
+    return cmd_server_import(args)
+
+
 def _cmd_manifest(args) -> Report:
     if args.action == "init":
         if not args.project:
@@ -491,6 +651,17 @@ def build_parser() -> argparse.ArgumentParser:
                           help="重放指定 journal 文件，恢复中断的导入")
     p_import.add_argument("--passphrase-file", default=None)
 
+    p_audit = sub.add_parser("audit", parents=[common], help="环境变量键名审计（只出键名）")
+
+    p_server = sub.add_parser("server", parents=[common], help="服务器资产采集/上传")
+    p_server.add_argument("action", choices=["export", "import"])
+    p_server.add_argument("--target", required=True, help="user@host（地址不进仓库）")
+    p_server.add_argument("--profile", default=argparse.SUPPRESS,
+                          help="选择 profiles 中的配置集")
+    p_server.add_argument("package", nargs="?", default=None,
+                          help="server import 时的 .enc 包路径")
+    p_server.add_argument("--passphrase-file", default=None)
+
     return parser
 
 
@@ -505,6 +676,8 @@ def main(argv: list[str] | None = None) -> int:
         "export": cmd_export,
         "verify": cmd_verify,
         "import": cmd_import,
+        "audit": cmd_audit,
+        "server": _cmd_server,
     }
     try:
         report = handlers[args.cmd](args)

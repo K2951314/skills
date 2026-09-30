@@ -1,0 +1,98 @@
+# ============================================================
+# 示例：一个真实项目的 .migrate/manifest.toml 长什么样
+# 脱敏副本：路径与条目来自智能询价，不含任何密钥值/服务器地址。
+# 复制到你的项目 .migrate/manifest.toml 后逐项确认，再跑 plan。
+# ============================================================
+
+schema_version = 1
+project = "smart-quotation"      # 包名前缀
+artifacts_dir = "_换机"           # 产物目录；必须是 gitignore 排除的
+
+rebuild = [
+  "python -m venv .venv",
+  "pip install -r requirements.txt",
+]
+verify = ["python -m pytest tests/ -q"]
+
+# ── workspace：本机资产 ───────────────────────────────────────────────
+[[items]]
+id = "env-file"
+path = ".env"
+class = "required"               # 缺了起不来 → 阻断导出
+item_type = "file"
+scope = "workspace"
+on_missing = "block"
+sensitive = true                 # 汇报只出键名与体积
+
+[[items]]
+id = "keys-dir"
+path = "keys"                    # 目录自动递归展开
+class = "required"
+item_type = "dir"
+scope = "workspace"
+on_missing = "block"
+sensitive = true
+
+[[items]]
+id = "local-db"
+path = "quotation.db"
+class = "recommended"            # 缺了能跑但丢数据 → 只警告
+item_type = "sqlite"             # backup API 一致性快照；-wal/-shm 不发货、导入时清除
+scope = "workspace"
+on_missing = "warn"
+
+[[items]]
+id = "ops-notes"
+path = "_*.md"                   # glob 通配
+class = "recommended"
+item_type = "glob"
+scope = "workspace"
+on_missing = "warn"
+sensitive = true                 # 运维笔记常含服务器细节
+
+# ── server：部署机资产（主机地址不进文件，导出时当场确认） ────────────
+[[items]]
+id = "etc-env"
+path = "etc-sq.env"              # 包内名
+remote_path = "/etc/sq.env"      # 服务器路径
+class = "required"
+scope = "server"
+on_missing = "block"
+capture = "file"                 # sudo cat 采集
+
+[[items]]
+id = "pg-dump"
+path = "sqdb.dump"
+class = "required"
+scope = "server"
+on_missing = "block"
+item_type = "pg"
+capture = "pg_dump"              # pg_dump -F c；PGDMP 头校验
+pg_user = "postgres"
+pg_db = "sqdb"
+
+[[items]]
+id = "caddyfile"
+path = "Caddyfile"
+remote_path = "/etc/caddy/Caddyfile"
+class = "recommended"
+scope = "server"
+capture = "file"
+
+# ── 配置集 ────────────────────────────────────────────────────────────
+[profiles.machine-only]          # migrate export --profile machine-only
+exclude = ["backups-server"]     # 对应「只换电脑、不带数据库快照」
+
+# ── 导入合并白名单（不在名单里的路径一律不写） ────────────────────────
+[merge]
+include = [".env", "keys", "quotation.db", "deliverables"]
+
+# ── 环境变量审计策略（键名集合；值永不入库） ──────────────────────────
+[env_audit]
+code_dirs = ["backend", "scripts"]        # 扫描 environ.get("KEY") 的目录
+tooling_only = ["SQ_DEV"]                 # 只在开发/CI 用，不算缺失
+defaulted_or_optional = ["LLM_MODEL"]     # 有默认值，不算缺失
+deprecated_aliases = { EMAIL_FROM = "SMTP_FROM" }   # 旧名 → 新名
+non_python_consumers = ["SQ_PYTHON"]      # 非 Python 工具读的键
+prod_required = ["JWT_SECRET", "ALLOW_ORIGINS"]     # 缺了出事 → 红
+server_only = ["SMTP_HOST", "WX_PAY"]     # 只在部署机；只换电脑可不带，重建服务器必须补

@@ -62,8 +62,17 @@ def check_member_name(name: str) -> str | None:
 def open_package(path: Path, passphrase: str) -> tuple[dict, dict[str, tuple[bytes, str]]]:
     """解密并打开包。返回 (package_manifest, {name: (data, sha256)})。
 
+    旧格式包（openssl Salted__ 头）走 legacy 只读路径；新包走 OCMIG1。
     成员预检在这里完成：任何非法成员在任何字节落盘前就失败。
     """
+    from .legacy import is_legacy_blob
+
+    blob_head = path.read_bytes()[:8]
+    if is_legacy_blob(blob_head):
+        from .legacy import open_legacy_package
+
+        return open_legacy_package(path, passphrase)
+
     blob = path.read_bytes()
     zip_bytes = decrypt_blob(blob, passphrase)   # 口令错/篡改 → CryptoError(exit 4)
     try:
