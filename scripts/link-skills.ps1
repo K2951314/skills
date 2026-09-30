@@ -1,6 +1,13 @@
-# 把本仓库挂载到 WorkBuddy AI 的技能扫描目录（整仓一个 junction）
-# 用法：powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1
-# 可选参数：-TargetRoot 指定其他工具的 skills 目录
+# Mount this repo into the WorkBuddy AI skills scan directory.
+# One junction covers the whole repo, so new skills take effect automatically.
+#
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1
+#   powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1 -TargetRoot "$env:USERPROFILE\.claude\skills"
+#
+# NOTE: this file is intentionally ASCII-only. Windows PowerShell 5.1 reads
+# BOM-less script files as ANSI/GBK, which corrupts non-ASCII characters and
+# breaks parsing. Keep it ASCII to stay portable.
 
 param(
     [string]$TargetRoot = (Join-Path $env:USERPROFILE ".workbuddy-ai\skills")
@@ -8,8 +15,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$repo = Split-Path -Parent $PSScriptRoot
-$name = Split-Path -Leaf $repo
+$repo   = Split-Path -Parent $PSScriptRoot
+$name   = Split-Path -Leaf $repo
 $target = Join-Path $TargetRoot $name
 
 if (-not (Test-Path $TargetRoot)) {
@@ -17,24 +24,23 @@ if (-not (Test-Path $TargetRoot)) {
 }
 
 if (Test-Path $target) {
-    Write-Host "[跳过] 已存在：$target" -ForegroundColor Yellow
+    Write-Host "[skip] already mounted: $target" -ForegroundColor Yellow
 } else {
     New-Item -ItemType Junction -Path $target -Target $repo | Out-Null
-    Write-Host "[完成] 已挂载" -ForegroundColor Green
-    Write-Host "       链接：$target"
-    Write-Host "       指向：$repo"
+    Write-Host "[ok] mounted" -ForegroundColor Green
+    Write-Host "     link   : $target"
+    Write-Host "     target : $repo"
 }
 
 Write-Host ""
-Write-Host "本仓库已注册的技能：" -ForegroundColor Cyan
-$found = $false
-Get-ChildItem -Path $repo -Directory | ForEach-Object {
-    if (Test-Path (Join-Path $_.FullName 'SKILL.md')) {
-        Write-Host "  - $($_.Name)"
-        $script:found = $true
-    }
+Write-Host "Skills registered from this repo:" -ForegroundColor Cyan
+$skills = Get-ChildItem -Path $repo -Directory |
+    Where-Object { Test-Path (Join-Path $_.FullName 'SKILL.md') }
+if ($skills) {
+    $skills | ForEach-Object { Write-Host "  - $($_.Name)" }
+} else {
+    Write-Host "  (none yet - add a skill folder, no re-mount needed)"
 }
-if (-not $found) { Write-Host "  （暂无，按 README 新增技能后无需重新挂载）" }
 
 Write-Host ""
-Write-Host "提示：新增技能后无需重新挂载；改过 description 需新开会话才生效。" -ForegroundColor DarkGray
+Write-Host "Note: adding a skill needs no re-mount. Changing a description needs a new session." -ForegroundColor DarkGray
