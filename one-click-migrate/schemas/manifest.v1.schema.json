@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/K2951314/skills/one-click-migrate/manifest.v1.schema.json",
+  "title": "one-click-migrate 项目声明 manifest.toml",
+  "type": "object",
+  "required": ["schema_version", "project", "items"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "manifest 格式主版本。高于引擎支持版本时引擎拒绝并提示升级技能。"
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "项目 slug，同时作为打包文件名前缀。"
+    },
+    "artifacts_dir": {
+      "type": "string",
+      "default": ".migrate",
+      "description": "产物目录（加密包、备份、journal）。必须被 .gitignore 排除。"
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "description": "要搬运的条目。只能包含 class=required/recommended/archive；refuse 与 rebuildable 属启发式，不得显式声明。",
+      "items": {
+        "type": "object",
+        "required": ["id", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "description": "稳定 id，导入时作为冲突键。"
+          },
+          "path": {
+            "type": "string",
+            "not": {"pattern": "^(/|\\\\|//|[A-Za-z]:)"},
+            "description": "项目内相对路径（正斜杠；glob 条目支持 * ? 通配）。"
+          },
+          "class": {
+            "enum": ["required", "recommended", "archive"],
+            "default": "required"
+          },
+          "item_type": {
+            "enum": ["file", "dir", "glob", "sqlite"],
+            "default": "file",
+            "description": "sqlite 走 backup API 一致性快照；sidecar 不发货、导入时清除。"
+          },
+          "scope": {
+            "enum": ["workspace", "server", "both"],
+            "default": "workspace"
+          },
+          "on_missing": {
+            "enum": ["block", "warn", "skip"],
+            "default": "warn"
+          },
+          "sensitive": {"type": "boolean", "default": false},
+          "review_status": {
+            "enum": ["confirmed", "needs-review", "skipped_by_user"],
+            "default": "confirmed"
+          },
+          "note": {"type": "string", "default": ""},
+          "remote_path": {
+            "type": "string",
+            "description": "server 作用域必填。服务器侧路径模板；主机地址不进 manifest。"
+          },
+          "capture": {
+            "enum": ["file", "pg_dump", "command"],
+            "description": "server 条目的采集方式。"
+          }
+        }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "include": {"type": "array", "items": {"type": "string"}},
+          "exclude": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "description": "配置集。include/exclude 引用 item id 或 \"*\"；--profile 选择。"
+    },
+    "env_audit": {
+      "type": "object",
+      "properties": {
+        "code_dirs": {"type": "array", "items": {"type": "string"}},
+        "tooling_only": {"type": "array", "items": {"type": "string"}},
+        "defaulted_or_optional": {"type": "array", "items": {"type": "string"}},
+        "deprecated_aliases": {"type": "object", "additionalProperties": {"type": "string"}},
+        "server_only": {"type": "array", "items": {"type": "string"}}
+      },
+      "description": "环境变量审计策略（键名集合；值永不入库）。"
+    },
+    "merge": {
+      "type": "object",
+      "properties": {
+        "include": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "workspace 包导入时允许合并进项目根的路径白名单。"
+        }
+      }
+    },
+    "rebuild": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "导入后要做的重建命令（记录进包内清单，引擎不自动执行）。"
+    },
+    "verify": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "导入后的验证命令（引擎可执行并报告退出码）。"
+    }
+  }
+}

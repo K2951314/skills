@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# one-click-migrate 引擎启动器（POSIX：Git Bash / Linux / macOS）
+# 零第三方依赖：引擎只用 Python 标准库（3.11+，tomllib）。
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SRC="$HERE/src"
+
+if [ ! -d "$SRC/migrate_engine" ]; then
+  echo "[错误] 引擎目录不存在：$SRC/migrate_engine" >&2
+  exit 6
+fi
+
+PY="${OC_MIGRATE_PYTHON:-}"
+if [ -z "$PY" ]; then
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then PY="$candidate"; break; fi
+  done
+fi
+if [ -z "$PY" ]; then
+  echo "[错误] 找不到 python3/python。设 OC_MIGRATE_PYTHON 指定解释器。" >&2
+  exit 6
+fi
+
+# Windows PYTHONPATH 必须是 Windows 风格路径（E:/... 或 E:\...），
+# MSYS 的 POSIX 路径（/e/...）会被原生 Python 忽略 —— 表现为
+# "No module named migrate_engine"。有 cygpath 就地转换，没有就用原值
+# （Linux/macOS 上原值本来就是对的）。
+if command -v cygpath >/dev/null 2>&1; then
+  SRC_FOR_PY="$(cygpath -w "$SRC")"
+else
+  SRC_FOR_PY="$SRC"
+fi
+
+PYTHONPATH="$SRC_FOR_PY${PYTHONPATH:+;$PYTHONPATH}" exec "$PY" -m migrate_engine "$@"
