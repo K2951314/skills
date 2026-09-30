@@ -1,0 +1,7 @@
+# 统一换行符，避免脚本在其他机器上因 CRLF 失效
+* text=auto eol=lf
+
+# Windows 脚本保留 CRLF
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
