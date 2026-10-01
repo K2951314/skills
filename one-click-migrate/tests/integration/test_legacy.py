@@ -86,7 +86,7 @@ def test_legacy_server_kind_by_marker(tmp_path):
     info, files = open_package(pkg, PW)
     assert info["kind"] == "server"
     with pytest.raises(PackageError) as exc:
-        restore_package(pkg, PW, tmp_path / "x", merge=True)
+        restore_package(pkg, PW, tmp_path / "x")
     assert exc.value.exit_code == 7
 
 
@@ -98,6 +98,55 @@ def test_legacy_both_markers_fails_safe_to_server(tmp_path):
     }, PW)
     info, _files = open_package(pkg, PW)
     assert info["kind"] == "server"
+
+
+def test_legacy_dot_slash_members_are_readable(tmp_path):
+    """`tar -C <dir> .` 打出的旧包，成员名必须能被读（A17）。
+
+    pull_from_server.sh 就是这样打包的：每个成员名都带 `./` 前缀。
+    成员预检原本无条件拒绝 `.` 段，于是格式完全合法的 server 包被当成
+    「包内成员不安全」拒掉——而那是重建服务器唯一依据的包。
+    """
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "etc-sq.env").write_text("JWT_SECRET=on-server\n", encoding="utf-8")
+    (stage / "sqdb.dump").write_bytes(b"PGDMP-fake")
+
+    plain = subprocess.run(
+        ["tar", "-czf", "-", "-C", str(stage), "."],
+        capture_output=True, check=True).stdout
+    # 确认这批成员名真的带 ./（`tar -C dir .` 还会多一个 "." 目录条目，
+    # 引擎按 isfile() 过滤掉它，所以这里只管文件成员）
+    with tarfile.open(fileobj=io.BytesIO(plain), mode="r:gz") as tf:
+        names = [n for n in tf.getnames() if n != "."]
+    assert names and all(n.startswith("./") for n in names), names
+
+    pkg = tmp_path / "dot-slash.enc"
+    openssl = plat.find_executable("openssl")
+    if openssl:
+        proc = subprocess.run(
+            [openssl, "enc", "-aes-256-cbc", "-salt", "-pbkdf2", "-iter", "200000",
+             "-pass", "pass:" + PW, "-out", str(pkg)],
+            input=plain, capture_output=True)
+        assert proc.returncode == 0, proc.stderr
+    else:
+        bash = plat.find_executable("bash")
+        script = ("openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 "
+                  f"-pass pass:{PW} -out \"$1\"")
+        proc = subprocess.run([bash, "-lc", script, "bash", str(pkg)],
+                              input=plain, capture_output=True)
+        assert proc.returncode == 0, proc.stderr
+
+    info, files = open_package(pkg, PW)
+    # 归一化后不带 ./ 前缀，且判型为 server
+    assert info["kind"] == "server"
+    assert set(files) == {"etc-sq.env", "sqdb.dump"}
+    assert not any(n.startswith("./") for n in files)
+
+    # server 包仍然拒绝合并进项目工作区
+    with pytest.raises(PackageError) as exc:
+        restore_package(pkg, PW, tmp_path / "x")
+    assert exc.value.exit_code == 7
 
 
 def test_legacy_wrong_passphrase(tmp_path):

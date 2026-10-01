@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import io
 import re
+import stat
 import tarfile
 from pathlib import Path
 
@@ -30,6 +31,22 @@ _LOCAL_MARKERS = (".env", "keys")
 
 def is_legacy_blob(blob: bytes) -> bool:
     return blob.startswith(LEGACY_MAGIC)
+
+
+def normalize_member_name(name: str) -> str:
+    """把旧包的 tar 成员名归一化成引擎能接受的形态。
+
+    `tar -C <dir> .` 打出的每个成员名都带 `./` 前缀（真实脚本
+    pull_from_server.sh 就是这样打的），而 check_member_name 无条件拒绝 `.`
+    段——于是格式合法的旧包被当成「包内成员不安全」拒掉，报错还说包损坏。
+
+    只在前导位置逐段剥离 `.`，中段的 `.` / `..` 一律保留，交给成员预检拒绝。
+    这个宽松化仅对旧包生效，新包路径不做任何让步。
+    """
+    normalized = name
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized or name
 
 
 def _openssl_decrypt(blob: bytes, passphrase: str) -> bytes:
@@ -115,22 +132,25 @@ def open_legacy_package(path: Path, passphrase: str) -> tuple[dict, dict[str, tu
     for info in members:
         if not info.isfile():
             continue
-        problem = check_member_name(info.name)
+        name = normalize_member_name(info.name)
+        problem = check_member_name(name)
         if problem:
             raise PackageError(f"旧包成员不安全：{problem}")
         if info.size > MAX_FILE_BYTES:
             raise PackageError(f"旧包成员超过单文件上限：{info.name}")
         data = _read_member(plain, info.name)
         digest = hashlib.sha256(data).hexdigest()
-        files[info.name] = (data, digest)
+        files[name] = (data, digest)
         items.append({
-            "id": re.sub(r"[^a-z0-9]+", "-", info.name.lower()).strip("-") or "item",
-            "path": info.name,
+            "id": re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "item",
+            "path": name,
             "bytes": len(data),
             "sha256": digest,
             "class": "recommended",
             "sensitive": True,
-            "item_type": "sqlite" if info.name.endswith((".db", ".sqlite", ".sqlite3")) else "file",
+            "item_type": "sqlite" if name.endswith((".db", ".sqlite", ".sqlite3")) else "file",
+            # 旧包 tar 里带了 mode；取不到就留空，导入侧按 sensitive 给 0600
+            "mode": oct(stat.S_IMODE(info.mode))[2:].zfill(3) if info.mode else "",
         })
     if not files:
         raise PackageError("旧包里没有普通文件。")

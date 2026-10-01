@@ -151,7 +151,7 @@ def test_server_package_merge_refused(project_with_manifest, tmp_path):
     pkg = tmp_path / "server.enc"
     pkg.write_bytes(encrypt_blob(zip_bytes, PW))
     with pytest.raises(PackageError) as exc:
-        restore_package(pkg, PW, tmp_path / "x", merge=True)
+        restore_package(pkg, PW, tmp_path / "x")
     assert exc.value.exit_code == 7
 
 
@@ -220,12 +220,59 @@ def test_verify_cli(project_with_manifest, capsys):
 
 
 def test_import_cli_conflict_exit_code(project_with_manifest, capsys):
+    """有文件成功写入、另有目标已存在被跳过 → 退出码 3 并提示 overwrite。"""
     result = _export(project_with_manifest)
+    fresh = tmp_path = project_with_manifest.parent / "clone-with-one-existing"
+    fresh.mkdir()
+    # .env 已在（git clone 就有），其余不存在 → 会写 3 个、跳 1 个
+    (fresh / ".gitignore").write_text(".env\n", encoding="utf-8")
+    (fresh / ".env").write_text("JWT_SECRET=already-here\n", encoding="utf-8")
     code = main(["--root", str(project_with_manifest), "import", str(result.path),
+                 "--out", str(fresh),
                  "--passphrase-file", _pw_file(project_with_manifest)])
     out = capsys.readouterr().out
     assert code == 3  # 目标已存在 → 冲突退出码
     assert "--on-conflict overwrite" in out
+
+
+def test_import_zero_written_is_an_error(project_with_manifest, capsys):
+    """一个文件都没落地必须报错，不能静默 exit 0（A16）。
+
+    白名单取自**目标项目**的 manifest。把一份白名单指向不存在路径的 manifest
+    放进目标目录 → 包内所有成员都被 blocked。旧逻辑在这种情况下 exit 0。
+    """
+    result = _export(project_with_manifest)
+    clone = project_with_manifest.parent / "clone-empty"
+    (clone / ".migrate").mkdir(parents=True)
+    (clone / ".migrate" / "manifest.toml").write_text(
+        'schema_version = 1\nproject = "fake-proj"\n\n[[items]]\nid = "env-file"\n'
+        'path = ".env"\n\n[merge]\ninclude = ["nonexistent.txt"]\n',
+        encoding="utf-8")
+    code = main(["--root", str(clone), "import", str(result.path),
+                 "--passphrase-file", _pw_file(project_with_manifest)])
+    out = capsys.readouterr().out
+    assert code == 3
+    assert "一个文件都没有写入" in out
+    # 说清是哪一类原因挡的，别让用户猜
+    assert "白名单" in out
+    assert not (clone / ".env").exists()
+
+
+def test_whitelist_that_matches_nothing_is_not_silently_opened(project_with_manifest, tmp_path):
+    """配了 [merge] 但一条都不匹配 = 什么都不许合并，不是「无限制」。"""
+    result = _export(project_with_manifest)
+    clone = tmp_path / "clone-wl"
+    (clone / ".migrate").mkdir(parents=True)
+    (clone / ".migrate" / "manifest.toml").write_text(
+        'schema_version = 1\nproject = "fake-proj"\n\n[[items]]\nid = "env-file"\n'
+        'path = ".env"\n\n[merge]\ninclude = ["nonexistent.txt"]\n',
+        encoding="utf-8")
+    info, plan, report = restore_package(result.path, PW, clone,
+                                         on_conflict="skip",
+                                         merge_whitelist=["nonexistent.txt"])
+    assert report.written == []
+    assert all(p.action == "blocked" for p in plan)
+    assert not (clone / ".env").exists()
 
 
 def test_import_cli_wrong_passphrase_exit_code(project_with_manifest, tmp_path, capsys):

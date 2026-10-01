@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
+import stat
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from . import EXIT_ERROR, __version__
 from .crypto import CryptoError, encrypt_blob
+from .env_health import check_env_health
 from .manifest import Manifest
 from .scan import resolve_item, snapshot_files
 
@@ -68,11 +70,17 @@ def _sqlite_snapshot_bytes(db_path: Path) -> bytes:
 
 
 def collect_entries(root: Path, manifest: Manifest, items) -> tuple[list[PackEntry], list[str]]:
-    """解析条目 → 逐文件条目。必需项缺失直接抛错（导出前止损）。"""
+    """解析条目 → 逐文件条目。必需项缺失直接抛错（导出前止损）。
+
+    env 类文件先过健康检查：病害在源机器上常常是静默的，搬到新机器才以
+    看似无关的错误爆出来（.env 行尾 CR / UTF-16 / BOM）。拦在这里比拦在新
+    机器上有用——那时用户已经以为资产恢复好了。
+    """
     entries: list[PackEntry] = []
     missing: list[str] = []
+    env_problems: list[str] = []
     for item in items:
-        resolved = resolve_item(root, item)
+        resolved = resolve_item(root, item, manifest.artifacts_dir)
         if resolved.missing:
             if item.on_missing == "block":
                 raise ExportError(
@@ -89,12 +97,41 @@ def collect_entries(root: Path, manifest: Manifest, items) -> tuple[list[PackEnt
             else:
                 data = snap.abspath.read_bytes()
                 digest = snap.sha256
+                if _looks_like_env(snap.relpath):
+                    problems = check_env_health(data)
+                    for p in problems:
+                        env_problems.append(f"{snap.relpath}：{p}")
             entries.append(PackEntry(
                 id=item.id, relpath=snap.relpath, abspath=snap.abspath,
                 data=data, sha256=digest, bytes=len(data),
                 cls=item.cls, sensitive=item.sensitive, item_type=item.item_type,
             ))
+    if env_problems:
+        raise EnvHealthError(env_problems)
     return entries, missing
+
+
+#: 视为 env 文件的包内名（按 basename 判定，目录无关）。
+_ENV_NAMES = (".env",)
+
+
+def _looks_like_env(relpath: str) -> bool:
+    """只对明确的 env 文件做健康检查——不猜内容，避免误报。
+
+    `.env.*` 变体（`.env.server`、`.env.example`）也算：坏的变体和坏的主文件
+    一样会污染新机器。但 `*.env`、`prod.env` 这类自定义命名不算，宁少不多。
+    """
+    base = relpath.rsplit("/", 1)[-1]
+    return base == ".env" or base.startswith(".env.")
+
+
+class EnvHealthError(Exception):
+    """env 文件带病。带 exit_code，CLI 转成可操作的中文报告。"""
+
+    def __init__(self, problems: list[str], *, exit_code: int = EXIT_ERROR):
+        super().__init__("env 文件健康检查未通过：\n" + "\n".join(f"  - {p}" for p in problems))
+        self.exit_code = exit_code
+        self.problems = list(problems)
 
 
 class ExportError(Exception):
@@ -128,6 +165,10 @@ def build_payload_zip(entries: list[PackEntry], *, kind: str, project: str,
                 "class": e.cls,
                 "sensitive": e.sensitive,
                 "item_type": e.item_type,
+                # 源文件的权限位。导入时按它设权——否则 keys/*.pem 从 0600
+                # 变成 umask 决定的 0644，在部署机上等于把私钥公开。
+                # Windows 上 chmod 基本无效，记下来只为 Linux/macOS 落库。
+                "mode": _mode_of(e.abspath),
             }
             for e in entries
         ],
@@ -140,6 +181,14 @@ def build_payload_zip(entries: list[PackEntry], *, kind: str, project: str,
         for e in entries:
             zf.writestr(e.relpath, e.data)
     return buf.getvalue()
+
+
+def _mode_of(path: Path) -> str:
+    """源文件权限位（八进制字符串）。取不到就返回空串，导入侧用默认值。"""
+    try:
+        return oct(stat.S_IMODE(path.stat().st_mode))[2:].zfill(3)
+    except OSError:
+        return ""
 
 
 def _hostname_hint() -> str:

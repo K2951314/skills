@@ -233,6 +233,54 @@ def validate_data(data: dict) -> tuple[list[str], Manifest]:
     if not isinstance(env_audit, dict):
         problems.append("env_audit 必须是表")
         env_audit = {}
+    else:
+        # 嵌套表键名白名单：拼错必须报错，不能静默失效。
+        # 真实的坑：`merge.includes`（多一个 s）让导入白名单整个消失，
+        # 而 whitelist=None 在导入侧表示「无限制」——限制被悄悄撤掉了。
+        known_env_audit = {
+            "code_dirs", "tooling_only", "defaulted_or_optional", "deprecated_aliases",
+            "non_python_consumers", "prod_required", "server_only", "env_files",
+            "consumers",
+        }
+        for key in env_audit:
+            if key not in known_env_audit:
+                problems.append(
+                    f"env_audit 含未知字段 {key!r}（拼写错误？已忽略。"
+                    f"可用：{sorted(known_env_audit)}）"
+                )
+        efiles = env_audit.get("env_files")
+        if efiles is not None and (
+                not isinstance(efiles, list)
+                or not all(isinstance(v, str) and v.strip() for v in efiles)):
+            problems.append("env_audit.env_files 必须是非空字符串数组（如 [\".env\", \".env.server\"]）")
+        consumers = env_audit.get("consumers")
+        if consumers is not None:
+            if not isinstance(consumers, list):
+                problems.append("env_audit.consumers 必须是表数组（[[env_audit.consumers]]）")
+            else:
+                for i, c in enumerate(consumers):
+                    if not isinstance(c, dict):
+                        problems.append(f"env_audit.consumers[{i}] 必须是表")
+                        continue
+                    for fname in ("glob", "pattern"):
+                        if not isinstance(c.get(fname), str) or not c.get(fname, "").strip():
+                            problems.append(
+                                f"env_audit.consumers[{i}] 必须提供 {fname}（非空字符串）")
+                    if c.get("pattern"):
+                        try:
+                            re.compile(c["pattern"])
+                        except re.error as exc:
+                            problems.append(
+                                f"env_audit.consumers[{i}].pattern 不是合法正则：{exc}")
+        known_merge = {"include"}
+        merge_for_check = data.get("merge", {})
+        if isinstance(merge_for_check, dict):
+            for key in merge_for_check:
+                if key not in known_merge:
+                    problems.append(
+                        f"merge 含未知字段 {key!r}（拼写错误？已忽略。"
+                        f"可用：{sorted(known_merge)}）"
+                    )
 
     for key in ("rebuild", "verify"):
         values = data.get(key, [])

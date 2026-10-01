@@ -95,8 +95,10 @@ def recover(artifacts_dir: Path, journal_file: Path) -> list[str]:
         elif op == "commit":
             commits[rec["dst"]] = rec
             order.append(rec["dst"])
-        elif op == "skip":
-            order.append(rec["dst"])
+        # skip 记录不是 commit：它没有备份、没有 sha256，不参与恢复。
+        # 曾经把 skip 也 append 进 order，下一轮 commits[dst] 直接 KeyError——
+        # 而「不在白名单」「已 git 跟踪」的导入每次都会写 skip，
+        # 于是崩溃恢复在真实 journal 上 100% 不可用。
 
     # 1. 半成品临时文件：写了没提交，删
     for tmp, rec in writes.items():
@@ -108,7 +110,9 @@ def recover(artifacts_dir: Path, journal_file: Path) -> list[str]:
 
     # 2. 已提交但状态不对的目标：恢复或移除
     for dst in order:
-        rec = commits[dst]
+        rec = commits.get(dst)
+        if rec is None:
+            continue
         dst_path = Path(dst)
         backup = rec.get("backup") or ""
         expected = rec.get("sha256") or ""

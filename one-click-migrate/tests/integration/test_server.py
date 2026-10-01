@@ -172,7 +172,7 @@ def test_server_package_roundtrip_and_merge_refusal(server_project, fake_ssh, tm
     from migrate_engine.unpack import restore_package
 
     with pytest.raises(Exception) as exc:
-        restore_package(pkg, PW, target_root, merge=True)
+        restore_package(pkg, PW, target_root)
     assert exc.value.exit_code == 7
 
 

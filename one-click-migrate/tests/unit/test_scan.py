@@ -73,3 +73,42 @@ def test_rel_posix_is_lexical(tmp_path):
     root = tmp_path / "r"
     root.mkdir()
     assert rel_posix(root / "a" / "b.txt", root) == "a/b.txt"
+
+
+def test_artifact_dir_is_never_packed(tmp_path):
+    """产物目录自身永不出现在包里（A）。
+
+    二次导出时 `_换机/` 里躺着上一轮的 .enc 与导入备份的明文 .env——
+    不跳过就是「包里有包」，且把明文密钥复制给任何拿到这个包的人。
+    """
+    root = tmp_path / "r"
+    root.mkdir()
+    art = "_换机"
+    (root / art).mkdir()
+    (root / art / "prev.tar.gz.enc").write_bytes(b"x" * 100)
+    (root / art / "journal").mkdir()
+    (root / art / "journal" / "leak.md").write_text("journal", encoding="utf-8")
+    (root / art / "backup-20261001-010101").mkdir()
+    (root / art / "backup-20261001-010101" / ".env").write_text("JWT=old\n", encoding="utf-8")
+    (root / ".env").write_text("JWT=new\n", encoding="utf-8")
+    (root / "_ops.md").write_text("notes", encoding="utf-8")
+
+    # glob 型：路径匹配层面拦得住
+    got = resolve_item(root, Item(id="md", path="*.md", item_type="glob"), art)
+    assert sorted(got.archive_names) == ["_ops.md"], sorted(got.archive_names)
+
+    # dir 型：目录名 + 路径双重拦
+    got2 = resolve_item(root, Item(id="all", path=".", item_type="dir"), art)
+    assert sorted(got2.archive_names) == [".env", "_ops.md"], sorted(got2.archive_names)
+    assert any("跳过" in n for n in got2.notes)
+
+
+def test_default_artifact_dir_skipped_without_manifest(tmp_path):
+    """没传 artifacts_dir 时，默认产物目录 .migrate 也要跳过。"""
+    root = tmp_path / "r"
+    (root / ".migrate").mkdir(parents=True)
+    (root / ".migrate" / "manifest.toml").write_text("x", encoding="utf-8")
+    (root / ".migrate" / "old.enc").write_bytes(b"x" * 50)
+    (root / ".env").write_text("A=1\n", encoding="utf-8")
+    got = resolve_item(root, Item(id="all", path=".", item_type="dir"))
+    assert list(got.archive_names) == [".env"]

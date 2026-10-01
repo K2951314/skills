@@ -34,9 +34,9 @@ from . import platform as plat
 from .crypto import CryptoError
 from .env_audit import audit as audit_env
 from .passphrase import PassphraseAborted, obtain as obtain_passphrase
-from .pack import ExportError, KIND_WORKSPACE, export_package
+from .pack import EnvHealthError, ExportError, KIND_WORKSPACE, export_package
 from .report import Report, human_size, sha8
-from .scan import resolve_item, snapshot_files
+from .scan import _ARTIFACT_DIR_NAMES, _SKIP_DIRS, resolve_item, snapshot_files
 from .server import ServerError, build_server_package, capture_server, upload_stage, validate_target
 from .unpack import (
     ON_CONFLICT_MODES,
@@ -182,7 +182,7 @@ def cmd_plan(args) -> Report:
             rep.say(f"  [服务器条目] {item.id}（{item.remote_path or item.path}）不在本机解析，"
                     "采集用 server export。")
             continue
-        resolved = resolve_item(root, item)
+        resolved = resolve_item(root, item, manifest.artifacts_dir)
         if resolved.missing:
             rep.row(id=item.id, cls=item.cls, size="-",
                     result="缺失，将阻断导出" if item.on_missing == "block" else "缺失，仅警告",
@@ -215,6 +215,12 @@ def cmd_plan(args) -> Report:
         suggestions: list[str] = []
         for rel in ignored:
             if rel in covered:
+                continue
+            # 依赖/缓存/构建产物里的同名文件不是候选：.venv 里的 cacert.pem 是
+            # certifi 自带的公钥证书，按「*.pem = 密钥材料」报出来只会误导用户
+            # 把第三方包的内容搬进迁移包。
+            parts = rel.split("/")
+            if any(p in _SKIP_DIRS or p in _ARTIFACT_DIR_NAMES for p in parts[:-1]):
                 continue
             hint = _hint_class(rel)
             if hint is None:
@@ -265,16 +271,20 @@ def cmd_export(args) -> Report:
         rep.finish(EXIT_REFUSED)
         return rep
 
-    if args.with_server or args.ask_server:
-        rep.warn("服务器资产采集（server 包）尚未启用——本次只打 workspace 包。"
-                 "换服务器场景请等引擎 server 子命令上线。")
-
     try:
         result = export_package(root, manifest, items, kind=KIND_WORKSPACE,
                                 passphrase=passphrase)
     except (ExportError, PassphraseAborted) as exc:
         rep.error(str(exc))
         rep.finish(getattr(exc, "exit_code", EXIT_ERROR))
+        return rep
+    except EnvHealthError as exc:
+        rep.error("拒绝打包一个带病的 .env——它到新机器上会以看似无关的错误爆出来。")
+        rep.lines.extend(f"  {p}" for p in exc.problems)
+        rep.say("")
+        rep.say("  先按上面修好 .env 再导。修完建议跑一次项目的健康检查，"
+                "确认解析出来的键数没变。")
+        rep.finish(exc.exit_code)
         return rep
 
     rep.set_data("package", str(result.path))
@@ -283,17 +293,44 @@ def cmd_export(args) -> Report:
     for name in result.missing:
         rep.warn(f"{name} 不存在，未进包（on_missing 非 block）。")
 
+    # 产物目录必须在忽略规则里：里面是加密包 + 导入时备份的明文 .env/私钥。
+    # 曾经的事故——两个 .enc 躺在仓库根而 .gitignore 什么都没写，一次
+    # git add -A 就把加密的密钥+数据库提交上去。检查比事后提醒可靠。
+    ignored = plat.git_ignore_check(root, manifest.artifacts_dir)
+    rep.set_data("artifacts_ignored", ignored)
+    if ignored is False:
+        rep.error(
+            f"产物目录 {manifest.artifacts_dir}/ 没有被 .gitignore 排除——"
+            "它里面是加密迁移包，导入时还会备份明文 .env 与私钥。"
+            f"现在改 .gitignore（加一行 `{manifest.artifacts_dir}/`），"
+            "并确认已有的包没有被 git 跟踪。"
+        )
+        rep.finish(EXIT_REFUSED)
+        return rep
+    if ignored is None:
+        rep.warn(f"无法确认 {manifest.artifacts_dir}/ 是否被忽略规则覆盖"
+                 "（非 git 仓库或无 git）。请自行确认它不会被提交。")
+
     # 导出后键名审计：本机包里「缺什么、什么是死键、哪些只应在服务器上」
     if manifest.env_audit:
-        result_audit = audit_env(root, manifest.env_audit)
+        # env_files 支持多源：智能询价有两套配置（.env 本地 / .env.server 部署），
+        # 只读 .env 会让只存在于 .env.server 的键被误判成「缺失」，
+        # 而那正是重建服务器时静默丢功能的那一类键。
+        env_files = list(manifest.env_audit.get("env_files") or [".env"])
+        result_audit = audit_env(root, manifest.env_audit, env_files=env_files)
         rep.set_data("audit_missing", sorted(result_audit.missing))
         rep.set_data("audit_dead", sorted(result_audit.dead))
+        rep.set_data("audit_env_files", env_files)
         if result_audit.scan_failed:
-            rep.warn("环境审计没扫到代码里的变量读取（code_dirs？），按 fail-closed 处理。")
+            rep.warn("环境审计没扫到代码里的变量读取（code_dirs？）——"
+                     "本次不报缺失、也不报死键（扫不到时下的判断会误导）。")
         for key in sorted(result_audit.missing):
-            rep.warn(f"代码读了 {key} 但本机没配——只换电脑可以不带，重建服务器前必须补。")
+            rep.warn(f"代码读了 {key} 但 {', '.join(env_files)} 里没配——"
+                     "只换电脑可以不带，重建服务器前必须补。")
         for key in sorted(result_audit.dead):
-            rep.warn(f"{key} 是死键（没代码读），确认后可删。")
+            rep.warn(f"{key} 配了但没代码读（死键，确认后可删）。")
+        for key in sorted(result_audit.server_only):
+            rep.say(f"  [提醒] {key} 只应在部署机上；本机 env 文件里也有，注意别外发。")
 
     rep.say("")
     rep.say(f"  包内 {len(result.entries)} 个文件。口令另行保管（丢了包永远解不开），")
@@ -342,27 +379,48 @@ def cmd_verify(args) -> Report:
 
 def cmd_import(args) -> Report:
     rep = Report(json_mode=bool(getattr(args, "json", False)), title="导入迁移包")
-    path = Path(args.package).expanduser()
-    if not path.is_file():
-        rep.error(f"找不到迁移包：{path}")
-        rep.finish(EXIT_USAGE)
-        return rep
     if args.on_conflict not in ON_CONFLICT_MODES:
         rep.error(f"--on-conflict 必须是 {ON_CONFLICT_MODES} 之一")
         rep.finish(EXIT_USAGE)
         return rep
 
     if args.recover:
+        # 崩溃恢复：重放 journal，与「导入哪个包」无关。
+        # 旧接口把必填的 package 当 journal 路径用，传 .enc 会 UnicodeDecodeError
+        # 裸崩、传错则假报成功——而 --recover 正是导入失败后最需要它的那一刻。
         from .journal import recover
 
         root = _root_of(args)
-        artifacts = root / ".migrate"
-        actions = recover(artifacts, Path(args.package))
-        rep.say("  journal 重放完成：")
+        manifest = None
+        try:
+            manifest = load_manifest(root)
+        except ManifestError:
+            pass
+        artifacts = root / (manifest.artifacts_dir if manifest else ".migrate")
+        journal = Path(args.journal) if args.journal else None
+        if journal is None:
+            candidates = sorted((artifacts / "journal").glob("import-*.jsonl"))
+            if not candidates:
+                rep.error(f"没找到 journal：{artifacts / 'journal'} 下没有 import-*.jsonl。")
+                rep.finish(EXIT_USAGE)
+                return rep
+            journal = candidates[-1]        # 最新的一个
+        if not journal.is_file():
+            rep.error(f"找不到 journal 文件：{journal}")
+            rep.finish(EXIT_USAGE)
+            return rep
+        rep.say(f"  重放 journal：{journal}")
+        actions = recover(artifacts, journal)
+        rep.say("  重放完成：")
         rep.lines.extend(f"    - {a}" for a in actions)
         rep.finish(EXIT_OK)
         return rep
 
+    path = Path(args.package).expanduser()
+    if not path.is_file():
+        rep.error(f"找不到迁移包：{path}")
+        rep.finish(EXIT_USAGE)
+        return rep
     try:
         passphrase = obtain_passphrase(confirm=False, source_file=args.passphrase_file,
                                        enforce_min=False)
@@ -372,12 +430,25 @@ def cmd_import(args) -> Report:
         return rep
 
     root = Path(args.out).expanduser().resolve() if args.out else _root_of(args)
+    artifacts_dir: Path | None = None
+    whitelist: list[str] | None = None
     try:
         manifest = load_manifest(root)
-        whitelist = manifest.merge_include or None
+        artifacts_dir = root / manifest.artifacts_dir
+        # manifest 声明的白名单必须原样生效——包括「一条都不匹配」的情形。
+        # 曾经的 `or None` 会把「配了但没匹配项」变成「无限制」，于是白名单
+        # 静默放开（merge.include 拼错、条目路径变更，都走这条静默失效路径）。
+        # 只有 manifest 整个缺失时才没有白名单，由 tracked 兜底。
+        whitelist = list(manifest.merge_include)
+        if "merge" not in manifest.raw:
+            # manifest 里没有 [merge] 节 → 不设白名单（裸声明 / 老模板）。
+            # 有 [merge] 但 include 为空 = 「什么都不许合并」，那是用户的选择，
+            # 不能悄悄变成无限制。
+            whitelist = None
     except ManifestError:
         manifest = None
         whitelist = None   # 裸克隆：无白名单，由 git tracked 判断兜底
+        artifacts_dir = None
 
     def ask_fn(name: str, dst: Path) -> str:
         print(f"  目标已存在：{name}（{human_size(dst.stat().st_size)}）")
@@ -388,6 +459,7 @@ def cmd_import(args) -> Report:
         info, plan, report = restore_package(
             path, passphrase, root,
             on_conflict=args.on_conflict,
+            artifacts_dir=artifacts_dir,
             merge_whitelist=whitelist,
             tracked=plat.git_tracked_files(root),
             ask_fn=ask_fn if args.on_conflict == "ask" else None,
@@ -397,13 +469,16 @@ def cmd_import(args) -> Report:
         rep.error(str(exc))
         rep.finish(exc.exit_code)
         return rep
+    except EnvHealthError as exc:
+        # 坏 .env 一个字节都不落盘——写下去了，用户会以为资产已恢复
+        rep.error("拒绝导入一个带病的 .env（目标没有任何改动）：")
+        rep.lines.extend(f"  {p}" for p in exc.problems)
+        rep.finish(exc.exit_code)
+        return rep
     except PassphraseAborted as exc:
         rep.error(str(exc))
         rep.finish(EXIT_REFUSED)
         return rep
-
-    if info["kind"] == "server":
-        rep.say("  这是服务器资产包：不合并进项目。换服务器步骤见 references/package-format.md。")
 
     for item in plan:
         rep.row(id=item.name, cls=info_lookup(info, item.name), size="-",
@@ -434,6 +509,31 @@ def cmd_import(args) -> Report:
     for step in info.get("verify", []):
         rep.say(f"  验证：{step}")
     rep.say("  验证命令失败就停，不要重复导入。")
+
+    if not report.written and not report.kept_both:
+        # 一个文件都没落地却报成功，是「换机后发现环境没恢复」的直接原因。
+        # 旧逻辑只在 reason == 「目标已存在」时给 3，blocked（git 已跟踪 /
+        # 不在白名单）算成功——于是 tracked 数据文件全被跳过时静默空转。
+        blocked_by_tracked = [i.name for i in plan
+                              if i.action == "blocked" and "git" in i.reason]
+        blocked_by_whitelist = [i.name for i in plan
+                                if i.action == "blocked" and "白名单" in i.reason]
+        rep.error("一个文件都没有写入——换机资产没有恢复。")
+        if blocked_by_tracked:
+            rep.warn(f"{len(blocked_by_tracked)} 个文件已被 git 跟踪（以仓库为准）："
+                     + ", ".join(blocked_by_tracked[:10]))
+            rep.say("  这些文件不在迁移包里恢复，改它们请 commit/push，或把它们从"
+                    " .gitignore 放出来后再打包。")
+        if blocked_by_whitelist:
+            rep.warn(f"{len(blocked_by_whitelist)} 个文件不在 manifest 的 merge.include 白名单："
+                     + ", ".join(blocked_by_whitelist[:10]))
+            rep.say("  要在白名单里补上对应路径（目录写目录名即可，支持前缀与 glob）。")
+        if not blocked_by_tracked and not blocked_by_whitelist:
+            rep.warn(f"{len(report.skipped)} 个文件目标已存在被跳过；确认覆盖加 "
+                     "--on-conflict overwrite（旧文件会先备份）。")
+        rep.finish(EXIT_CONFLICTS)
+        return rep
+
     if conflicts and args.on_conflict == "skip":
         # 退出码 3：.cmd 启动器据此提供 --overwrite 重试；错密码/服务在跑不提供
         rep.warn(f"{len(conflicts)} 个文件目标已存在被跳过；确认覆盖加 --on-conflict overwrite"
@@ -464,25 +564,28 @@ def cmd_audit(args) -> Report:
         rep.error(str(exc))
         rep.finish(exc.exit_code)
         return rep
-    result = audit_env(root, manifest.env_audit)
+    env_files = list(manifest.env_audit.get("env_files") or [".env"])
+    result = audit_env(root, manifest.env_audit, env_files=env_files)
     rep.set_data("missing", sorted(result.missing))
     rep.set_data("missing_required", sorted(result.missing_required))
     rep.set_data("dead", sorted(result.dead))
     rep.set_data("server_only_declared", sorted(result.server_only))
+    rep.set_data("env_files", env_files)
     if result.scan_failed:
         rep.error("没扫到任何代码里的环境变量读取——code_dirs 配错了？"
-                  "fail-closed：不报「正常」。")
+                  "fail-closed：不报「正常」，也不报缺失/死键（那会误导）。")
         rep.finish(EXIT_ERROR)
         return rep
     for key in sorted(result.missing_required):
         rep.error(f"缺少生产必需的环境变量：{key}")
     for key in sorted(result.missing - result.missing_required):
-        rep.warn(f"代码读了 {key}，但 .env 与部署机清单里都没有——换机会缺它。")
+        rep.warn(f"代码读了 {key}，但 {', '.join(env_files)} 与部署机清单里都没有——换机会缺它。")
     for key in sorted(result.dead):
         rep.warn(f"{key} 配了但没代码读——死键，确认后可删。")
     for key in sorted(result.server_only):
-        rep.say(f"  [提醒] {key} 只应在部署机上（本机 .env 里也有，注意别外发）。")
-    rep.say(f"  代码读取 {len(result.code_keys)} 个键；env 文件 {len(result.env_keys)} 个键。")
+        rep.say(f"  [提醒] {key} 只应在部署机上（本机 env 文件里也有，注意别外发）。")
+    rep.say(f"  代码读取 {len(result.code_keys)} 个键；env 文件 {len(result.env_keys)} 个键"
+            f"（{', '.join(env_files)}）。")
     if not (result.missing or result.dead):
         rep.say("  没有缺失、没有死键。")
     rep.finish(EXIT_OK)
@@ -534,6 +637,18 @@ def cmd_server_export(args) -> Report:
 
     rep.set_data("package", str(out))
     rep.set_data("target_alias", target)
+    ignored = plat.git_ignore_check(root, manifest.artifacts_dir)
+    rep.set_data("artifacts_ignored", ignored)
+    if ignored is False:
+        rep.error(
+            f"产物目录 {manifest.artifacts_dir}/ 没有被 .gitignore 排除——"
+            "server 包装的是数据库转储与系统配置明文密钥。先改 .gitignore 再导。"
+        )
+        rep.finish(EXIT_REFUSED)
+        return rep
+    if ignored is None:
+        rep.warn(f"无法确认 {manifest.artifacts_dir}/ 是否被忽略规则覆盖"
+                 "（非 git 仓库或无 git）。server 包含明文密钥，请注意落点。")
     rep.say(f"  目标：{target}")
     rep.say(f"  产物：{out}（{human_size(out.stat().st_size)}，已加密）")
     for note in result.notes:
@@ -555,6 +670,12 @@ def cmd_server_import(args) -> Report:
         rep.finish(EXIT_USAGE)
         return rep
     target = validate_target(args.target)
+    try:
+        root = _root_of(args)
+    except ManifestError as exc:
+        rep.error(str(exc))
+        rep.finish(exc.exit_code)
+        return rep
     try:
         passphrase = obtain_passphrase(confirm=False, source_file=args.passphrase_file,
                                        enforce_min=False)
@@ -632,8 +753,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_export = sub.add_parser("export", parents=[common], help="打包本机资产为加密迁移包")
     p_export.add_argument("--profile", default=None, help="选择 profiles 中的配置集")
-    p_export.add_argument("--with-server", action="store_true", help="同时采集服务器资产")
-    p_export.add_argument("--ask-server", action="store_true", help="询问是否采集服务器资产")
     p_export.add_argument("--passphrase-file", default=None,
                           help="从文件读口令（首行）；也可用环境变量 MIGRATE_PASSPHRASE")
 
@@ -642,13 +761,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--passphrase-file", default=None)
 
     p_import = sub.add_parser("import", parents=[common], help="在新机器上导入迁移包")
-    p_import.add_argument("package", help=".enc 迁移包路径")
+    p_import.add_argument("package", nargs="?", default=None, help=".enc 迁移包路径（--recover 时可不给）")
     p_import.add_argument("--out", default=None, help="目标项目根（默认 --root）")
     p_import.add_argument("--on-conflict", default="skip", choices=list(ON_CONFLICT_MODES),
                           help="目标已存在时的处理（默认 skip：只写不存在的文件）")
     p_import.add_argument("--dry-run", action="store_true", help="只打印计划，不写任何文件")
     p_import.add_argument("--recover", action="store_true",
-                          help="重放指定 journal 文件，恢复中断的导入")
+                          help="重放 journal，恢复中断的导入（不带包路径）")
+    p_import.add_argument("--journal", default=None,
+                          help="--recover 时指定 journal 文件（默认取最新一个）")
     p_import.add_argument("--passphrase-file", default=None)
 
     p_audit = sub.add_parser("audit", parents=[common], help="环境变量键名审计（只出键名）")
@@ -688,6 +809,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n[中止] 用户中断。", file=sys.stderr)
         return EXIT_REFUSED
+    except (OSError, ValueError, TimeoutError) as exc:
+        # 平台层与解析层的意外（ssh 超时、文件被占用、URI 解析失败）不该把
+        # Python traceback 摔给用户——那不是可操作的错误信息。
+        report = Report(json_mode=json_mode)
+        report.error(f"{type(exc).__name__}: {exc}")
+        report.finish(EXIT_ERROR)
     return report.emit()
 
 

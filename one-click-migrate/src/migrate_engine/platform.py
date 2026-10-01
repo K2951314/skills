@@ -107,6 +107,24 @@ def git_ignored_files(root: Path) -> list[str] | None:
     return sorted({name for name in out.split("\0") if name})
 
 
+def git_ignore_check(root: Path, relpath: str) -> bool | None:
+    """relpath（相对 root）是否被本仓库的忽略规则覆盖。
+
+    返回 True=已忽略 / False=未忽略 / None=无法判断（非 git 仓库或无 git）。
+    无法判断与「未忽略」必须区分——前者不该阻断，后者要。
+    """
+    if find_executable("git") is None:
+        return None
+    if git_repo_root(root) is None:
+        return None
+    rc, _out, _err = run(["git", "-C", str(root), "check-ignore", "-q", relpath])
+    if rc == 0:
+        return True
+    if rc == 1:
+        return False
+    return None   # git 报错（配置损坏等）→ 无法判断
+
+
 # ── 能力体检 ────────────────────────────────────────────────────────────
 
 

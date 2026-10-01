@@ -105,6 +105,7 @@ class CapturedFile:
     cls: str
     sensitive: bool
     item_type: str
+    mode: str = ""     # 源权限位；空 = 导入侧按 sensitive 给默认
 
 
 @dataclass
@@ -208,12 +209,15 @@ def build_server_package(result: ServerCaptureResult, manifest: Manifest,
         "items": [
             {"id": e.id, "path": e.name, "bytes": len(e.data),
              "sha256": _sha(e.data), "class": e.cls, "sensitive": e.sensitive,
-             "item_type": e.item_type}
+             "item_type": e.item_type,
+             # server 资产全部按敏感处理：默认收紧到 0600，不留给 umask
+             "mode": e.mode or ("600" if e.sensitive else "")}
             for e in result.entries
         ] + [{"id": "env-metadata", "path": "ENV-METADATA.txt",
               "bytes": len(result.metadata.encode("utf-8")),
               "sha256": _sha(result.metadata.encode("utf-8")),
-              "class": "required", "sensitive": False, "item_type": "file"}],
+              "class": "required", "sensitive": False, "item_type": "file",
+              "mode": ""}],
         "rebuild": manifest.rebuild,
         "verify": manifest.verify,
     }
