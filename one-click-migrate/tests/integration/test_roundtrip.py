@@ -288,6 +288,42 @@ def test_import_cli_wrong_passphrase_exit_code(project_with_manifest, tmp_path, 
     assert "口令" in out
 
 
+def test_import_cli_pick_lists_and_selects(project_with_manifest, monkeypatch, capsys):
+    """--pick：不给包路径时列出产物目录里的包，按编号选。
+
+    这是双击 .cmd「一键换机」入口的必需能力：用户手上只有一个目录，
+    不是一条路径。选包的逻辑必须在引擎里做完——旧实现用 for /f 把路径回传
+    给 cmd，被 PowerShell 管道送来的 BOM 弄坏过。
+    """
+    result = _export(project_with_manifest)
+    answers = iter(["1"])
+    monkeypatch.setattr("migrate_engine.cli._read_line", lambda prompt: next(answers))
+    clone = project_with_manifest.parent / "clone-pick"
+    clone.mkdir()
+    # --root 是「包在哪、manifest 怎么说」的一方；--out 才是写入目标。
+    # 新机器的空目录里既没有包也没有 manifest，两者必须分开。
+    code = main(["--root", str(project_with_manifest), "import", "--pick",
+                 "--out", str(clone),
+                 "--passphrase-file", _pw_file(project_with_manifest)])
+    out = capsys.readouterr().out
+    assert code == 0
+    # 列出了包并等待选择，然后按编号导入了选中的那个
+    assert "个迁移包" in out
+    assert ".enc" in out
+    assert (clone / ".env").is_file()
+
+
+def test_import_cli_pick_empty_dir_is_clear(tmp_path):
+    """产物目录里没有包时给可操作的错误，不是崩。"""
+    code = main(["--root", str(tmp_path), "import", "--pick"])
+    assert code == 2
+
+
+def test_import_without_package_tells_you_about_pick(tmp_path):
+    code = main(["--root", str(tmp_path), "import"])
+    assert code == 2
+
+
 def _pw_file(root: Path) -> str:
     p = root / ".migrate" / "pw.txt"
     p.write_text(PW + "\n", encoding="utf-8")

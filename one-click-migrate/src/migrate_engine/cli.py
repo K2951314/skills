@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import (
@@ -80,6 +82,26 @@ def _hint_class(relpath: str) -> tuple[str, str] | None:
         if fnmatch.fnmatch(relpath, pattern):
             return cls, why
     return None
+
+
+def _read_line(prompt: str) -> str | None:
+    """读一行输入。没有输入流时返回 None（调用方当中止处理）。
+
+    刻意不用裸 input()：它在 stdin 是管道/重定向时抛 EOFError，而调用方更该
+    防的是 readline 返回空串导致的死循环。返回 None 一律当中止，绝不当成
+    空回答再问一遍（Git Bash 里 getpass 也曾因 /dev/tty 不存在挂死，
+    见 passphrase.py 的说明——那条坑这里同样适用）。
+    """
+    if not os.isatty(0):
+        print(prompt, end="", file=sys.stderr, flush=True)
+        line = sys.stdin.readline()
+        if line == "":
+            return None
+        return line.rstrip("\r\n")
+    try:
+        return input(prompt).rstrip("\r\n")
+    except EOFError:
+        return None
 
 
 def _root_of(args) -> Path:
@@ -381,6 +403,46 @@ def cmd_import(args) -> Report:
     rep = Report(json_mode=bool(getattr(args, "json", False)), title="导入迁移包")
     if args.on_conflict not in ON_CONFLICT_MODES:
         rep.error(f"--on-conflict 必须是 {ON_CONFLICT_MODES} 之一")
+        rep.finish(EXIT_USAGE)
+        return rep
+
+    if args.pick:
+        # 不指定包路径时，列出产物目录里现成的包让用户选一个。
+        # 这是双击 .cmd 那类「一键换机」入口的必需品：用户手上只有一个目录，
+        # 不是一条路径。选包的逻辑必须在引擎里做完，不能靠 shell 回传值——
+        # 用 for /f 捕获路径曾经被 PowerShell 管道送来的 BOM 弄坏过。
+        root = _root_of(args)
+        manifest = None
+        try:
+            manifest = load_manifest(root)
+        except ManifestError:
+            pass
+        artifacts = root / (manifest.artifacts_dir if manifest else ".migrate")
+        candidates = sorted(p for p in artifacts.glob("*.enc") if p.is_file())
+        if not candidates:
+            rep.error(f"{artifacts} 下没有迁移包（*.enc）。先在一台旧机器上跑 export。")
+            rep.finish(EXIT_USAGE)
+            return rep
+        rep.say(f"  {artifacts} 里有 {len(candidates)} 个迁移包：")
+        for i, p in enumerate(candidates, 1):
+            rep.say(f"    {i}) {p.name}  ({human_size(p.stat().st_size)}, "
+                    f"{datetime.fromtimestamp(p.stat().st_mtime).strftime('%Y-%m-%d %H:%M')})")
+        answer = _read_line("导入哪一个？[编号，回车取最新] ")
+        if answer is None:
+            rep.say("[中止] 没有输入流。请在终端里直接运行，或把包路径作为参数传入。")
+            rep.finish(EXIT_REFUSED)
+            return rep
+        answer = answer.strip()
+        if not answer:
+            args.package = str(candidates[-1])
+        elif answer.isdigit() and 1 <= int(answer) <= len(candidates):
+            args.package = str(candidates[int(answer) - 1])
+        else:
+            chosen = Path(answer).expanduser()
+            args.package = str(chosen)
+        rep.say("")
+    elif not args.package:
+        rep.error("没给迁移包路径。用法：migrate import <包>，或用 --pick 从产物目录里选。")
         rep.finish(EXIT_USAGE)
         return rep
 
@@ -766,6 +828,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--on-conflict", default="skip", choices=list(ON_CONFLICT_MODES),
                           help="目标已存在时的处理（默认 skip：只写不存在的文件）")
     p_import.add_argument("--dry-run", action="store_true", help="只打印计划，不写任何文件")
+    p_import.add_argument("--pick", action="store_true",
+                          help="不给包路径时，列出产物目录里的包让用户选")
     p_import.add_argument("--recover", action="store_true",
                           help="重放 journal，恢复中断的导入（不带包路径）")
     p_import.add_argument("--journal", default=None,
