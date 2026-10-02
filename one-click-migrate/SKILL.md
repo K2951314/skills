@@ -52,6 +52,24 @@ migrate plan                        # 解析清单 + 忽略项差异建议，不
 
 项目已有换机脚本（如智能询价的 `scripts/migrate.py`）：先读它，把它的资产清单翻译成 manifest 条目，不要两套并存跑。参考 `references/example-smart-quotation.md`。
 
+### 1.5. SSH 免密配置（部署到服务器的项目，换机后必跑）
+
+部署到服务器的项目（有 `scope = "server"` 条目）换机后，新机器没有 SSH 密钥，`server export/import` 用 `BatchMode=yes` 会直接失败。**换机后第一次跑 server 命令前，先配好免密**：
+
+```bash
+# 验证免密是否配好（不碰服务器，只跑 ssh target true）
+migrate ssh-check --target ubuntu@<服务器IP>
+
+# 一次配好：生成密钥（如无）→ 推公钥到服务器 → 验证
+migrate ssh-setup --target ubuntu@<服务器IP>
+```
+
+`ssh-setup` 会交互要求输入服务器密码——**这是唯一一次**，之后公钥已进 `~/.ssh/authorized_keys`，免密生效。Windows 上没有 `ssh-copy-id` 时自动 fallback 到手动推送。
+
+可选参数：`--port 22`（非默认端口）、`--force`（已有密钥时也在旁边新建一个）、`--strict-host`（不自动接受新主机指纹，要求先手动 `ssh target` 一次）。
+
+`doctor` 也会检查 SSH 能力：有 ssh 可执行但无私钥时，提示跑 `ssh-setup`。`server export/import` 在 SSH 失败时同样给出 `ssh-setup` 引导。
+
 ### 2. 导出（旧机器）
 
 ```bash

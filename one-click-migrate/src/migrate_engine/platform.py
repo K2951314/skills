@@ -195,4 +195,122 @@ def doctor() -> dict:
             caps["tmp_writable"] = True
     except OSError:
         caps["tmp_writable"] = False
+    caps["ssh"] = find_executable("ssh")
+    caps["ssh_keygen"] = find_executable("ssh-keygen")
+    caps["ssh_copy_id"] = find_executable("ssh-copy-id")
+    caps["ssh_keys"] = list_ssh_keys()
     return caps
+
+
+# ── SSH 密钥与免密登录 ──────────────────────────────────────────────────
+#
+# 换机后新机器没有 SSH 密钥 / known_hosts / authorized_keys，server export
+# 会因 BatchMode=yes 直接失败。这里提供密钥发现、连接探测、密钥生成、
+# 公钥推送的能力，让换机流程能把免密配置一次跑通。
+
+
+#: 按优先级排列的密钥文件名（ed25519 优先于 RSA：更短更安全）。
+SSH_KEY_NAMES = ("id_ed25519", "id_ecdsa", "id_rsa")
+
+
+def ssh_dir() -> Path:
+    """返回 ``~/.ssh`` 路径。不保证存在。"""
+    return Path.home() / ".ssh"
+
+
+def list_ssh_keys() -> list[str]:
+    """列出 ``~/.ssh`` 下已存在的私钥文件名（不含路径、不含公钥）。
+
+    只认 SSH_KEY_NAMES 里的名字——不枚举整个 .ssh 目录（里面有
+    known_hosts / config / 授权的第三方密钥，乱认会误导）。
+    """
+    d = ssh_dir()
+    if not d.is_dir():
+        return []
+    found = []
+    for name in SSH_KEY_NAMES:
+        if (d / name).is_file():
+            found.append(name)
+    return found
+
+
+def default_key_path() -> Path:
+    """返回默认密钥路径（第一个不存在的 SSH_KEY_NAMES，回退 id_ed25519）。"""
+    d = ssh_dir()
+    for name in SSH_KEY_NAMES:
+        p = d / name
+        if not p.exists():
+            return p
+    return d / SSH_KEY_NAMES[0]
+
+
+def public_key_path(private_key: Path) -> Path:
+    """私钥路径 → 对应公钥路径（``.pub`` 后缀）。"""
+    return private_key.with_suffix(private_key.suffix + ".pub")
+
+
+def ssh_keygen(key_path: Path, *, comment: str, key_type: str = "ed25519",
+               env: dict[str, str] | None = None) -> tuple[int, str, str]:
+    """生成 SSH 密钥对。已存在则跳过（返回 rc=0 + 提示）。
+
+    用 ``-N ""`` 给空 passphrase——服务器场景的密钥就是要无人值守能连，
+    加了 passphrase 每次连都要输，BatchMode=yes 会直接失败。
+    """
+    if key_path.exists():
+        return 0, f"密钥已存在：{key_path}", ""
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    argv = [
+        "ssh-keygen", "-t", key_type,
+        "-f", str(key_path),
+        "-N", "",
+        "-C", comment,
+    ]
+    if key_type == "rsa":
+        argv.extend(["-b", "4096"])
+    rc, out, err = run(argv, env=env)
+    # Windows 上 ssh-keygen 可能不在 PATH（OpenSSH 客户端可选功能）
+    return rc, out, err
+
+
+def test_ssh_connection(target: str, *, timeout: float = 15.0,
+                        env: dict[str, str] | None = None
+                        ) -> tuple[bool, str]:
+    """测试能否免密连上 target（user@host）。
+
+    用与 server.py 相同的 BatchMode=yes + StrictHostKeyChecking=yes，
+    跑一条无害命令（``true``）验证整条链路：密钥认证、known_hosts、
+    网络可达。返回 (ok, message)。ok=False 时 message 是人可读的失败原因。
+    """
+    from .server import SSH_OPTS
+
+    ssh = find_executable("ssh")
+    if ssh is None:
+        return False, "找不到 ssh 客户端。Windows 上需在「设置 → 应用 → 可选功能」装 OpenSSH 客户端。"
+    argv = [ssh, *SSH_OPTS, "-o", f"ConnectTimeout={int(timeout)}",
+            target, "true"]
+    try:
+        rc, out, err = run(argv, timeout=timeout + 5, env=env)
+    except TimeoutError:
+        return False, f"连接超时（{timeout}s）。服务器不可达或防火墙拦截。"
+    except FileNotFoundError as exc:
+        return False, str(exc)
+    if rc == 0:
+        return True, "免密登录已配置。"
+    # BatchMode=yes 下最常见的失败码是 255
+    err_lower = (err or "").lower()
+    if "permission denied" in err_lower or "publickey" in err_lower:
+        return False, (
+            "公钥认证失败——服务器不认本机的密钥。"
+            "跑 `migrate ssh-setup --target " + target + "` 推公钥。"
+        )
+    if "host key verification failed" in err_lower or "could not resolve hostname" in err_lower:
+        return False, (
+            "主机指纹未信任或主机名无法解析：\n  " + (err or "").strip() +
+            "\n先手动 ssh " + target + " 一次，接受指纹后再跑。"
+        )
+    if "connection refused" in err_lower or "connection timed out" in err_lower:
+        return False, (
+            "网络不通：\n  " + (err or "").strip() +
+            "\n确认服务器在跑、SSH 端口开放、IP 没变。"
+        )
+    return False, f"SSH 连接失败（rc={rc}）：{(err or '').strip()}"

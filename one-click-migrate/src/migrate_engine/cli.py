@@ -19,6 +19,7 @@ from . import (
     EXIT_CONFLICTS,
     EXIT_ERROR,
     EXIT_OK,
+    EXIT_PLATFORM,
     EXIT_REFUSED,
     EXIT_UNSUPPORTED,
     EXIT_USAGE,
@@ -48,6 +49,7 @@ from .registry import (
 from .report import Report, human_size, sha8
 from .scan import _ARTIFACT_DIR_NAMES, _SKIP_DIRS, resolve_item, snapshot_files
 from .server import ServerError, build_server_package, capture_server, upload_stage, validate_target
+from .ssh_setup import SshSetupError, ensure_key as ssh_ensure_key, push_public_key, verify_and_report
 from .unpack import (
     ON_CONFLICT_MODES,
     PackageError,
@@ -136,6 +138,12 @@ def cmd_doctor(args) -> Report:
         rep.warn("没有 git：扫描忽略项与 git 已跟踪判断不可用，manifest 仍可工作。")
     if caps["sqlite3"] is None:
         rep.warn("sqlite3 不可用：item_type=sqlite 的快照与 sidecar 清理不可用。")
+    # SSH：server export/import 的前提。换机后新机器常缺密钥。
+    if caps.get("ssh") is None:
+        rep.warn("没有 ssh：server export/import 不可用。Windows 上需装 OpenSSH 客户端。")
+    elif not caps.get("ssh_keys"):
+        rep.warn("没有 SSH 私钥：server export/import 会因免密失败。"
+                 "跑 `migrate ssh-setup --target user@host` 生成密钥并推公钥。")
     try:
         root = _root_of(args)
     except ManifestError:
@@ -702,6 +710,11 @@ def cmd_server_export(args) -> Report:
         out = build_server_package(result, manifest, passphrase, root / manifest.artifacts_dir)
     except (ServerError, PassphraseAborted) as exc:
         rep.error(str(exc))
+        # SSH 连接失败（免密没配好）时给出 ssh-setup 引导
+        msg = str(exc).lower()
+        if "permission denied" in msg or "publickey" in msg or "host key" in msg or "batchmode" in msg:
+            rep.say(f"  SSH 免密未配好。跑 `migrate ssh-setup --target {target}` 一次配好。")
+            rep.say(f"  或先 `migrate ssh-check --target {target}` 看具体卡在哪。")
         rep.finish(getattr(exc, "exit_code", EXIT_ERROR))
         return rep
 
@@ -758,6 +771,11 @@ def cmd_server_import(args) -> Report:
                                 hints=_server_hints(root))
     except (ServerError, PackageError, CryptoError) as exc:
         rep.error(str(exc))
+        # SSH 连接失败（免密没配好）时给出 ssh-setup 引导
+        msg = str(exc).lower()
+        if "permission denied" in msg or "publickey" in msg or "host key" in msg or "batchmode" in msg:
+            rep.say(f"  SSH 免密未配好。跑 `migrate ssh-setup --target {target}` 一次配好。")
+            rep.say(f"  或先 `migrate ssh-check --target {target}` 看具体卡在哪。")
         rep.finish(getattr(exc, "exit_code", EXIT_ERROR))
         return rep
     rep.set_data("target_alias", target)
@@ -1375,6 +1393,112 @@ def _cmd_batch(args) -> Report:
     return rep
 
 
+# ── SSH 免密配置 ─────────────────────────────────────────────────────────
+#
+# 换机后新机器没有 SSH 密钥，server export 用 BatchMode=yes 会直接失败。
+# ssh-check 验证免密是否配好；ssh-setup 生成密钥 + 推公钥，一次跑通。
+
+
+def cmd_ssh_check(args) -> Report:
+    rep = Report(json_mode=bool(getattr(args, "json", False)),
+                 title="SSH 免密登录检查")
+    target = args.target
+    try:
+        target = validate_target(target)
+    except ServerError as exc:
+        rep.error(str(exc))
+        rep.finish(EXIT_USAGE)
+        return rep
+
+    # 先看本机有没有 ssh 与密钥
+    ssh_exe = plat.find_executable("ssh")
+    rep.set_data("ssh", ssh_exe)
+    if ssh_exe is None:
+        rep.error("找不到 ssh 客户端。Windows 上需在「设置 → 应用 → 可选功能」装 OpenSSH 客户端。")
+        rep.finish(EXIT_PLATFORM)
+        return rep
+
+    keys = plat.list_ssh_keys()
+    rep.set_data("ssh_keys", keys)
+    rep.say(f"  本机密钥：{', '.join(keys) if keys else '无'}")
+    if not keys:
+        rep.error(
+            "本机没有 SSH 私钥——server export/import 无法免密连服务器。"
+            "跑 `migrate ssh-setup --target " + target + "` 生成密钥并推公钥。"
+        )
+        rep.finish(EXIT_REFUSED)
+        return rep
+
+    rep.say(f"  测试免密连接：{target} …")
+    ok, message = verify_and_report(target)
+    rep.set_data("ok", ok)
+    if ok:
+        rep.say(f"  ✓ {message}")
+        rep.finish(EXIT_OK)
+    else:
+        rep.error(f"✗ {message}")
+        rep.finish(EXIT_REFUSED)
+    return rep
+
+
+def cmd_ssh_setup(args) -> Report:
+    rep = Report(json_mode=bool(getattr(args, "json", False)),
+                 title="SSH 免密登录配置")
+    target = args.target
+    try:
+        target = validate_target(target)
+    except ServerError as exc:
+        rep.error(str(exc))
+        rep.finish(EXIT_USAGE)
+        return rep
+
+    # 1. 确保 ssh 可用
+    if plat.find_executable("ssh") is None:
+        rep.error("找不到 ssh 客户端。Windows 上需在「设置 → 应用 → 可选功能」装 OpenSSH 客户端。")
+        rep.finish(EXIT_PLATFORM)
+        return rep
+
+    # 2. 生成密钥（或复用已有的）
+    try:
+        key_path, key_status = ssh_ensure_key(force=args.force)
+    except SshSetupError as exc:
+        rep.error(str(exc))
+        rep.finish(exc.exit_code)
+        return rep
+    rep.set_data("key", str(key_path))
+    rep.say(f"  密钥：{key_status}")
+
+    # 3. 推公钥（这一步交互输服务器密码）
+    rep.say(f"  推送公钥到 {target} …")
+    rep.say("  （会要求输入服务器密码——这是唯一一次，之后就免密了）")
+    try:
+        push_msg = push_public_key(target, key_path, port=args.port,
+                                   accept_new_host=not args.strict_host)
+    except SshSetupError as exc:
+        rep.error(str(exc))
+        rep.finish(exc.exit_code)
+        return rep
+    rep.say(f"  ✓ {push_msg}")
+
+    # 4. 验证免密
+    rep.say(f"  验证免密连接：{target} …")
+    ok, message = verify_and_report(target)
+    rep.set_data("ok", ok)
+    if ok:
+        rep.say(f"  ✓ {message}")
+        rep.say("")
+        rep.say("  现在可以跑 server export/import 了：")
+        rep.say(f"    migrate server export --target {target}")
+        rep.say(f"    migrate server import <包> --target {target}")
+        rep.finish(EXIT_OK)
+    else:
+        rep.error(f"✗ {message}")
+        rep.say("  公钥已推但验证失败——常见原因：服务器禁了公钥认证、")
+        rep.say("  authorized_keys 权限不对、或服务器端的 sshd_config 限制。")
+        rep.finish(EXIT_REFUSED)
+    return rep
+
+
 # ── 参数解析 ────────────────────────────────────────────────────────────
 
 
@@ -1468,6 +1592,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument("--dry-run", action="store_true",
                          help="import 时只打印计划，不写任何文件")
 
+    # ── SSH 免密配置 ──
+    # 换机后新机器没有 SSH 密钥，server export 用 BatchMode=yes 会直接失败。
+    # ssh-check 验证免密；ssh-setup 生成密钥 + 推公钥，一次跑通。
+    p_ssh_check = sub.add_parser("ssh-check", parents=[common],
+                                  help="验证能否免密连上服务器（user@host）")
+    p_ssh_check.add_argument("target", help="user@host（地址不进仓库）")
+
+    p_ssh_setup = sub.add_parser("ssh-setup", parents=[common],
+                                  help="生成密钥 + 推公钥到服务器，配置免密登录")
+    p_ssh_setup.add_argument("target", help="user@host（地址不进仓库）")
+    p_ssh_setup.add_argument("--port", type=int, default=22, help="SSH 端口（默认 22）")
+    p_ssh_setup.add_argument("--force", action="store_true",
+                              help="已有密钥时也在旁边新建一个（不删旧密钥）")
+    p_ssh_setup.add_argument("--strict-host", action="store_true", dest="strict_host",
+                              help="不自动接受新主机指纹（默认 accept-new）")
+
     return parser
 
 
@@ -1485,6 +1625,8 @@ def main(argv: list[str] | None = None) -> int:
         "audit": cmd_audit,
         "server": _cmd_server,
         "batch": _cmd_batch,
+        "ssh-check": cmd_ssh_check,
+        "ssh-setup": cmd_ssh_setup,
     }
     try:
         report = handlers[args.cmd](args)
@@ -1493,6 +1635,10 @@ def main(argv: list[str] | None = None) -> int:
         report.error(str(exc))
         report.finish(exc.exit_code)
     except RegistryError as exc:
+        report = Report(json_mode=json_mode)
+        report.error(str(exc))
+        report.finish(exc.exit_code)
+    except SshSetupError as exc:
         report = Report(json_mode=json_mode)
         report.error(str(exc))
         report.finish(exc.exit_code)
