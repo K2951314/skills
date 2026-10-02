@@ -50,53 +50,62 @@ def normalize_member_name(name: str) -> str:
 
 
 def _openssl_decrypt(blob: bytes, passphrase: str) -> bytes:
-    """openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000，口令走 stdin（首行）。"""
+    """openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000。
+
+    口令与密文都走临时文件（``-pass file:`` + ``-in``），不用 ``-pass stdin``：
+    OpenSSL 3.x 改了 stdin 的口令读取行为，旧版「第一行口令、其余密文」的
+    玩法在新版上报 ``Error reading password from BIO``。临时文件用完即删。
+    """
+    import os
+    import tempfile
+
     from . import platform as plat
 
-    payload = passphrase.encode("utf-8") + b"\n" + blob
+    fd_key, key_path = tempfile.mkstemp(suffix=".key")
+    fd_blob, blob_path = tempfile.mkstemp(suffix=".enc")
+    try:
+        with os.fdopen(fd_key, "wb") as fh:
+            fh.write(passphrase.encode("utf-8") + b"\n")
+        with os.fdopen(fd_blob, "wb") as fh:
+            fh.write(blob)
 
-    openssl = plat.find_executable("openssl")
-    if openssl is not None:
-        # PATH 上有 openssl：密文经临时文件给（stdin 已被口令占用），用完即删
-        import os
-        import tempfile
+        openssl = plat.find_executable("openssl")
+        if openssl is not None:
+            argv = [openssl, "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "200000",
+                    "-pass", f"file:{key_path}", "-in", blob_path]
+            rc, out, err = plat.run_binary(argv, timeout=120.0)
+        else:
+            # Windows PATH 上没有 openssl：走 Git Bash（它内置 openssl）。
+            # 用 find_git_bash 而非 find_executable("bash")：PATH 上的 bash 可能是
+            # WSL 存根，没装发行版时一调就挂。Git for Windows 的 bash 才有 openssl。
+            bash = plat.find_git_bash()
+            if bash is None:
+                raise PackageError(
+                    "导入旧格式包需要 openssl。请安装 Git for Windows（其 bash 内置 openssl），"
+                    "或把 openssl 加进 PATH。",
+                    exit_code=EXIT_UNSUPPORTED,
+                )
+            # 临时文件路径是 Windows 风格；Git Bash 的 openssl 接受正斜杠。
+            key_posix = key_path.replace("\\", "/")
+            blob_posix = blob_path.replace("\\", "/")
+            script = (f"openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 "
+                      f"-pass file:{_shquote(key_posix)} -in {_shquote(blob_posix)}")
+            rc, out, err = plat.run_binary([bash, "-lc", script], timeout=120.0)
+    finally:
+        Path(key_path).unlink(missing_ok=True)
+        Path(blob_path).unlink(missing_ok=True)
 
-        fd, tmp_path = tempfile.mkstemp(suffix=".enc")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(blob)
-            rc, out, err = plat.run_binary(
-                [openssl, "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "200000",
-                 "-pass", "stdin", "-in", tmp_path],
-                timeout=120.0,
-                input_bytes=passphrase.encode("utf-8") + b"\n",
-            )
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-        if rc != 0:
-            raise CryptoError(
-                f"旧包解密失败（口令错误或包损坏）：{err.strip()[:200]}",
-                exit_code=EXIT_PASSPHRASE,
-            )
-        return out
-
-    # Windows PATH 上没有 openssl：走 Git Bash（它内置 openssl）。
-    # 口令与密文都走 stdin——`-pass stdin` 只读第一行当口令，其余是密文。
-    bash = plat.find_executable("bash")
-    if bash is None:
-        raise PackageError(
-            "导入旧格式包需要 openssl。请安装 Git for Windows（其 bash 内置 openssl），"
-            "或把 openssl 加进 PATH。",
-            exit_code=EXIT_UNSUPPORTED,
-        )
-    script = "openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass stdin"
-    rc, out, err = plat.run_binary([bash, "-lc", script], timeout=120.0, input_bytes=payload)
     if rc != 0:
         raise CryptoError(
             f"旧包解密失败（口令错误或包损坏）：{err.strip()[:200]}",
             exit_code=EXIT_PASSPHRASE,
         )
     return out
+
+
+def _shquote(s: str) -> str:
+    """给 bash 的单引号转义。路径不含单引号时就是 '' 包裹。"""
+    return "'" + s.replace("'", "'\"'\"'") + "'"
 
 
 def _tar_members(plain: bytes) -> list[tarfile.TarInfo]:

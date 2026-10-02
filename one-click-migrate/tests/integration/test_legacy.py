@@ -21,7 +21,7 @@ PW = "legacy-passphrase-123"
 def _have_openssl() -> bool:
     if plat.find_executable("openssl"):
         return True
-    bash = plat.find_executable("bash")
+    bash = plat.find_git_bash()
     if not bash:
         return False
     rc, _out, _err = plat.run_binary([bash, "-lc", "command -v openssl"])
@@ -47,7 +47,7 @@ def _make_legacy_package(tmp_path: Path, files: dict[str, bytes], passphrase: st
             input=plain, capture_output=True,
         )
     else:
-        bash = plat.find_executable("bash")
+        bash = plat.find_git_bash()
         script = (f"openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 "
                   f"-pass pass:{passphrase} -out \"$1\"")
         # 脚本体不含用户数据之外的内容；口令仅出现在这条一次性命令里
@@ -130,7 +130,7 @@ def test_legacy_dot_slash_members_are_readable(tmp_path):
             input=plain, capture_output=True)
         assert proc.returncode == 0, proc.stderr
     else:
-        bash = plat.find_executable("bash")
+        bash = plat.find_git_bash()
         script = ("openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 "
                   f"-pass pass:{PW} -out \"$1\"")
         proc = subprocess.run([bash, "-lc", script, "bash", str(pkg)],
@@ -170,7 +170,7 @@ def test_legacy_traversal_member_refused(tmp_path):
                         "-iter", "200000", "-pass", "pass:" + PW, "-out", str(out)],
                        input=plain, capture_output=True, check=True)
     else:
-        bash = plat.find_executable("bash")
+        bash = plat.find_git_bash()
         subprocess.run([bash, "-lc",
                         f"openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 "
                         f"-pass pass:{PW} -out \"$1\"", "bash", str(out)],

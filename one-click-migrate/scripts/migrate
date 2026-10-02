@@ -22,8 +22,8 @@ if [ -z "$PY" ]; then
   exit 6
 fi
 
-# Windows PYTHONPATH 必须是 Windows 风格路径（E:/... 或 E:\...），
-# MSYS 的 POSIX 路径（/e/...）会被原生 Python 忽略 —— 表现为
+# Windows PYTHONPATH 必须是 Windows 风格路径（C:/... 或 D:/...），
+# MSYS 的 POSIX 路径（/c/... /d/...）会被原生 Python 忽略 —— 表现为
 # "No module named migrate_engine"。有 cygpath 就地转换，没有就用原值
 # （Linux/macOS 上原值本来就是对的）。
 if command -v cygpath >/dev/null 2>&1; then

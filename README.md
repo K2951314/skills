@@ -5,16 +5,16 @@
 ## 这个仓库是什么
 
 - **唯一物理来源**：每个子目录 = 一个技能，核心是一份 `SKILL.md`
-- **远程仓库**：<https://github.com/K2951314/skills.git>。`E:\Ingulf\my-skills` 是它的本地工作副本，也是集成目录
+- **远程仓库**：<https://github.com/K2951314/skills.git>。本地工作副本路径由你决定（见下方示意），同时也是集成目录
 - **开发在这里，生效靠链接**：本仓库**不在**任何工具的技能扫描路径内，通过 junction / 软链挂载到工具的技能目录
 - **换电脑只需两步**：`git clone` + 跑一次 `scripts/link-skills.*`
 
 ```
-E:\Ingulf\my-skills\                    ← 权威副本（在这里开发、commit、push）
+<你选的路径>/my-skills/                    ← 权威副本（在这里开发、commit、push）
         │
         │  junction
         ▼
-C:\Users\Ingulf\.workbuddy-ai\skills\my-skills   ← 生效位置（工具扫描这里）
+~/.workbuddy-ai/skills/my-skills          ← 生效位置（工具扫描这里）
 ```
 
 ## 目录结构
@@ -90,4 +90,4 @@ cd ~/my-skills && bash scripts/link-skills.sh      # Windows 用 scripts\link-sk
 ## 参考
 
 - 技能格式规范：<https://agentskills.io/specification>
-- 本机技能目录与自建规范：`E:\Ingulf\skills\skill-authoring-guide.md`
+- 本机技能目录与自建规范：你本机技能仓库根下的 `skill-authoring-guide.md`（如有）

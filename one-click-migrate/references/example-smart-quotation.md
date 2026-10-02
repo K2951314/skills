@@ -4,7 +4,7 @@
 
 ## 当前状态（2026-09-30）
 
-- 项目声明已落地：`E:\Ingulf\智能询价\.migrate\manifest.toml`（12 条目：8 workspace + 4 server）。引擎 `plan`/`manifest validate` 已在真实项目验证通过。
+- 项目声明已落地：`<项目根>/.migrate/manifest.toml`（12 条目：8 workspace + 4 server）。引擎 `plan`/`manifest validate` 已在真实项目验证通过。
 - 旧模块仍在项目内：`scripts/migrate.py`（export/import/merge）、`scripts/pack_workspace.sh`、`scripts/pull_from_server.sh`、`scripts/env_audit.py`、`scripts/migrate.sh`、两个 `.cmd` 启动器。它们是历史包的唯一读取途径，删除前必须完成下面的切换清单。
 
 ## 声明怎么从旧脚本翻译过来
@@ -38,11 +38,11 @@ server 包内文件与用法：`sqdb.dump` → 新库建好后 `pg_restore --no-
 
 ## 切换清单（删旧模块前必须全绿）
 
-按 `E:\Ingulf\my-skills` 仓库里的实施方案执行，顺序如下：
+按本仓库（`my-skills`）里的实施方案执行，顺序如下：
 
 1. 引擎全测试绿（`pytest`，含 security/integration/legacy）。
 2. 用引擎对智能询价做一次真实导出一轮：`migrate export` → `migrate verify` → 导入临时目录 → 跑 `verify` 命令。
-3. `scripts/migrate.py` 改薄包装：保留 `export` / `import` / `merge` 子命令签名与中文提示，转调引擎 CLI（引擎路径找 `OC_MIGRATE_ENGINE` 环境变量 → 默认 `E:\Ingulf\my-skills\one-click-migrate` → PATH 上的 `migrate`）。
+3. `scripts/migrate.py` 改薄包装：保留 `export` / `import` / `merge` 子命令签名与中文提示，转调引擎 CLI（引擎路径找 `OC_MIGRATE_ENGINE` 环境变量 → 默认 `<技能安装位置>/one-click-migrate` → PATH 上的 `migrate`）。
 4. 项目测试迁移：`tests/test_migrate_package_kind.py`、`test_migrate_cli_language.py`、`test_env_audit.py` 的断言改指向引擎行为（kind 判型在 `migrate_engine/legacy.py` 与包内 manifest；产物目录断言改查 `manifest.toml` 的 `artifacts_dir`）。
 5. 删 `scripts/migrate.sh`（只打印命令的名不副实向导）→ 删 `pack_workspace.sh` / `pull_from_server.sh` / `env_audit.py` → 更新 `docs/换机恢复指南.md` 与 `docs/machine-migration.md` 入口（保留 openssl 手工三步作为 legacy 兜底）。
 6. 旧 `.enc` 包回归：任选一个历史包 `migrate verify` + `import --dry-run` 通过。

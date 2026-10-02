@@ -17,8 +17,19 @@ if not exist "%SRC%\migrate_engine" (
 )
 
 set "PY=%OC_MIGRATE_PYTHON%"
-if "%PY%"=="" set "PY=py"
 set "PYTHONUTF8=1"
 
+if not "%PY%"=="" goto :run
+
+REM Prefer the py launcher (ships with python.org installers). Not every
+REM minimal Windows box has it, so fall back to python / py -3 in order.
+where py >nul 2>&1 && set "PY=py"
+if "%PY%"=="" where python >nul 2>&1 && set "PY=python"
+if "%PY%"=="" (
+  echo [ERROR] No Python 3.11+ found. Set OC_MIGRATE_PYTHON to a venv python.
+  exit /b 6
+)
+
+:run
 "%PY%" -c "import sys; sys.path.insert(0, r'%SRC%'); from migrate_engine.cli import main; sys.exit(main())" %*
 exit /b %errorlevel%

@@ -2,7 +2,7 @@
 
 远程仓库：<https://github.com/K2951314/skills.git>
 
-本地集成目录：`E:\Ingulf\my-skills`
+本地集成目录：你克隆到的位置（建议放用户目录下，如 `~/my-skills`）。
 
 二者是同一份内容。本地目录是工作副本，远程仓库是权威副本。技能在本地目录里新增和修改，确认后提交并推送。不要在 `~/.workbuddy-ai/skills/` 里另存一份技能正文。
 
@@ -12,10 +12,10 @@
 https://github.com/K2951314/skills.git
         │  git clone / pull / push
         ▼
-E:\Ingulf\my-skills                         工作副本，也是集成目录
+<你选的路径>/my-skills                      工作副本，也是集成目录
         │  junction，整仓挂一次
         ▼
-C:\Users\Ingulf\.workbuddy-ai\skills\my-skills
+~/.workbuddy-ai/skills/my-skills
 ```
 
 挂载由 `scripts/link-skills.ps1` 或 `scripts/link-skills.sh` 完成。新电脑上先克隆到固定路径，再跑一次挂载。之后新增技能不用重新挂载。

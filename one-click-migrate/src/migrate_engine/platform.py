@@ -63,6 +63,50 @@ def find_executable(name: str) -> str | None:
     return shutil.which(name)
 
 
+def find_git_bash() -> str | None:
+    """在 Windows 上找真正的 Git Bash，绕过 PATH 上的 WSL bash 存根。
+
+    Windows 的 ``Microsoft\\WindowsApps\\bash.exe`` 是 WSL 存根——没有装
+    发行版时一调就报 ``WSL_E_DEFAULT_DISTRO_NOT_FOUND``。而 Git for Windows
+    的 bash 内置 openssl/tar/cygpath，是 legacy 旧包导入与 POSIX 启动器在
+    Windows 上的真实依赖。
+
+    探测顺序：
+    1. ``git --exec-path`` 的上级目录下的 ``bin/bash.exe`` / ``usr/bin/bash.exe``；
+    2. 常见安装路径（Program Files / Program Files (x86)）；
+    3. 回退到 ``shutil.which("bash")``（可能是 WSL 存根，但在非 Windows 或
+       已安装 WSL 发行版时是对的）。
+
+    非 Windows 平台直接返回 ``shutil.which("bash")``。
+    """
+    if not IS_WINDOWS:
+        return shutil.which("bash")
+
+    # 1. 从 git 位置反推
+    git_exe = shutil.which("git")
+    if git_exe:
+        git_dir = Path(git_exe).resolve().parent
+        # git.exe 常在 <GitRoot>/cmd/ 或 <GitRoot>/bin/ 或 <GitRoot>/mingw64/bin/
+        for ancestor in [git_dir, git_dir.parent]:
+            for sub in ("bin", "usr/bin"):
+                candidate = ancestor / sub / "bash.exe"
+                if candidate.is_file():
+                    return str(candidate)
+
+    # 2. 常见安装路径
+    for base in (
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git",
+    ):
+        for sub in ("bin", "usr/bin"):
+            candidate = base / sub / "bash.exe"
+            if candidate.is_file():
+                return str(candidate)
+
+    # 3. 回退（可能是 WSL 存根，但至少在已装 WSL 的机器上是对的）
+    return shutil.which("bash")
+
+
 # ── git 探针 ────────────────────────────────────────────────────────────
 
 
