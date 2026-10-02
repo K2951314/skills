@@ -75,7 +75,7 @@ def obtain(*, confirm: bool, source_file: str | None = None,
         pw = _read_secret(f"迁移口令（至少 {MIN_LENGTH} 位，输入不显示）: ")
         if pw is None:
             raise PassphraseAborted("没有输入流，无法读取口令。请在终端里直接运行。")
-        if len(pw) < MIN_LENGTH:
+        if enforce_min and len(pw) < MIN_LENGTH:
             print(f"口令至少 {MIN_LENGTH} 位。")
             continue
         if confirm:

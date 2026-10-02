@@ -37,6 +37,14 @@ from .crypto import CryptoError
 from .env_audit import audit as audit_env
 from .passphrase import PassphraseAborted, obtain as obtain_passphrase
 from .pack import EnvHealthError, ExportError, KIND_WORKSPACE, export_package
+from .registry import (
+    DEFAULT_REGISTRY_PATH,
+    RegistryError,
+    expand_path as expand_registry_path,
+    filter_entries as filter_registry_entries,
+    load_registry,
+    scaffold_registry,
+)
 from .report import Report, human_size, sha8
 from .scan import _ARTIFACT_DIR_NAMES, _SKIP_DIRS, resolve_item, snapshot_files
 from .server import ServerError, build_server_package, capture_server, upload_stage, validate_target
@@ -784,6 +792,589 @@ def _cmd_manifest(args) -> Report:
     return cmd_manifest_validate(args)
 
 
+# ── 批量换机 ────────────────────────────────────────────────────────────
+#
+# 注册表（~/.migrate-registry.toml）列出要一起换机的项目。batch 子命令组
+# 逐项目复用单项目逻辑（cmd_plan / cmd_export / cmd_verify / cmd_import），
+# 收集每项的 Report 汇总成一份批量报告。
+#
+# 口令策略：批量 export 默认所有项目共用一个口令——交互输入一次，写临时
+# 文件，通过 --passphrase-file 传给每个单项目命令，结束后删临时文件。
+# 逐项目不同口令用 --per-project-passphrase（逐项目交互输入）。
+#
+# 容错：一个项目失败不中断其他项目。批量退出码：全成功=0，否则=1。
+
+
+class _NS:
+    """轻量 Namespace：给单项目命令构造 args，不依赖 argparse。
+
+    argparse.Namespace 的属性访问用 getattr，这里只需要同名属性存在即可。
+    刻意不用 types.SimpleNamespace：它的 __repr__ 在报错时太长。
+    """
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+def _make_project_args(args, root: str, *, profile: str | None,
+                       passphrase_file: str | None,
+                       package: str | None = None,
+                       on_conflict: str | None = None,
+                       dry_run: bool = False) -> _NS:
+    """构造单项目命令需要的 args 对象。
+
+    批量命令与单项目命令共享 --json 状态；--root 覆盖为当前项目的路径。
+    profile 优先用注册表条目的，条目没写就用命令行的。
+    """
+    return _NS(
+        root=root,
+        json=getattr(args, "json", False),
+        profile=profile or getattr(args, "profile", None),
+        passphrase_file=passphrase_file,
+        package=package,
+        on_conflict=on_conflict or getattr(args, "on_conflict", "skip"),
+        dry_run=dry_run or getattr(args, "dry_run", False),
+        out=None,
+        pick=False,
+        recover=False,
+        journal=None,
+    )
+
+
+def _write_temp_passphrase(passphrase: str) -> tuple[str, "object"]:
+    """把口令写到临时文件，返回 (路径, 临时文件对象)。
+
+    口令不进 argv（会出现在进程列表/日志）。临时文件用 0600 权限，
+    调用方负责 keep-alive 并最终删除。文件名不带项目名，避免泄露换机清单。
+    """
+    import tempfile
+
+    fd, path = tempfile.mkstemp(suffix=".pass")
+    import os as _os
+
+    try:
+        _os.chmod(path, 0o600)
+    except OSError:
+        pass  # Windows 上 chmod 基本无效
+    with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(passphrase + "\n")
+    return path, tempfile  # 返回 tempfile 模块引用，调用方用它删
+
+
+def cmd_batch_init(args) -> Report:
+    rep = Report(json_mode=bool(getattr(args, "json", False)), title="生成注册表草稿")
+    text = scaffold_registry()
+    if args.print_only:
+        rep.say(text)
+        rep.finish(EXIT_OK)
+        return rep
+    target = expand_registry_path(getattr(args, "registry", None) or DEFAULT_REGISTRY_PATH)
+    if target.exists() and not args.force:
+        rep.error(f"{target} 已存在。加 --force 覆盖，或 --print 看模板。")
+        rep.finish(EXIT_CONFLICTS)
+        return rep
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    rep.set_data("written", str(target))
+    rep.say(f"已写入 {target}")
+    rep.say("下一步：改成你的项目列表，逐项确认 path 后跑 `migrate batch plan`。")
+    rep.finish(EXIT_OK)
+    return rep
+
+
+def cmd_batch_list(args) -> Report:
+    rep = Report(json_mode=bool(getattr(args, "json", False)), title="注册表项目清单")
+    try:
+        registry = load_registry(getattr(args, "registry", None))
+    except RegistryError as exc:
+        rep.error(str(exc))
+        rep.finish(exc.exit_code)
+        return rep
+    rep.set_data("registry", str(registry.path))
+    rep.set_data("count", len(registry.entries))
+    rep.say(f"  注册表：{registry.path}")
+    rep.say(f"  共 {len(registry.entries)} 个项目：")
+    exists_count = 0
+    for e in registry.entries:
+        exists = e.resolved.is_dir()
+        if exists:
+            exists_count += 1
+        marker = "✓" if exists else "✗"
+        profile_tag = f"  [profile={e.profile}]" if e.profile else ""
+        rep.row(id=e.name, cls=marker, size=str(e.resolved),
+                result="存在" if exists else "路径不存在", note=e.path + profile_tag)
+    rep.set_data("exists_count", exists_count)
+    if exists_count < len(registry.entries):
+        rep.warn(f"{len(registry.entries) - exists_count} 个项目路径不存在，批量执行时会跳过。")
+    rep.finish(EXIT_OK)
+    return rep
+
+
+def cmd_batch_plan(args) -> Report:
+    rep = Report(json_mode=bool(getattr(args, "json", False)),
+                 title="批量迁移计划（不打包，逐项目列清单）")
+    try:
+        registry = load_registry(getattr(args, "registry", None))
+        entries = filter_registry_entries(registry,
+                                          getattr(args, "only", None),
+                                          getattr(args, "exclude", None))
+    except RegistryError as exc:
+        rep.error(str(exc))
+        rep.finish(exc.exit_code)
+        return rep
+
+    rep.set_data("registry", str(registry.path))
+    rep.set_data("project_count", len(entries))
+    results: list[dict] = []
+    any_blocking = False
+
+    for entry in entries:
+        proj_rep = Report(json_mode=False, title=f"  [{entry.name}]")
+        if not entry.resolved.is_dir():
+            proj_rep.error(f"路径不存在：{entry.resolved}（注册表写的是 {entry.path}）")
+            proj_rep.finish(EXIT_USAGE)
+            results.append({"name": entry.name, "exit": EXIT_USAGE,
+                            "path": str(entry.resolved)})
+            rep.lines.append("")
+            rep.lines.append(f"  [{entry.name}] ✗ 路径不存在")
+            any_blocking = True
+            continue
+
+        try:
+            sub_args = _make_project_args(args, str(entry.resolved),
+                                          profile=entry.profile,
+                                          passphrase_file=None)
+            sub_rep = cmd_plan(sub_args)
+        except ManifestError as exc:
+            proj_rep.error(str(exc))
+            proj_rep.finish(exc.exit_code)
+            results.append({"name": entry.name, "exit": exc.exit_code,
+                            "path": str(entry.resolved)})
+            rep.lines.append("")
+            rep.lines.append(f"  [{entry.name}] ✗ manifest 问题")
+            any_blocking = True
+            continue
+
+        exit_code = sub_rep.exit_code
+        results.append({"name": entry.name, "exit": exit_code,
+                        "path": str(entry.resolved)})
+        marker = "✓" if exit_code == EXIT_OK else "⚠" if exit_code == EXIT_CONFLICTS else "✗"
+        rep.lines.append("")
+        rep.lines.append(f"  [{entry.name}] {marker} exit={exit_code}")
+        # 把单项目报告的行（去掉标题）接进来
+        for line in sub_rep.lines:
+            rep.lines.append("    " + line)
+        for r in sub_rep.rows:
+            rep.row(id=f"{entry.name}/{r.id}", cls=r.cls, size=r.size,
+                    sha256_8=r.sha256_8, result=r.result, note=r.note)
+        for w in sub_rep.warnings:
+            rep.warn(f"[{entry.name}] {w}")
+        for e in sub_rep.errors:
+            rep.error(f"[{entry.name}] {e}")
+        if exit_code == EXIT_CONFLICTS:
+            any_blocking = True
+
+    rep.set_data("results", results)
+    rep.say("")
+    summary = (f"  汇总：{len(results)} 个项目，"
+               f"{sum(1 for r in results if r['exit'] == 0)} 成功，"
+               f"{sum(1 for r in results if r['exit'] not in (0, EXIT_CONFLICTS))} 失败")
+    rep.say(summary)
+    if any_blocking:
+        rep.error("存在缺失的必需项或路径错误，批量导出会失败或丢数据。")
+        rep.finish(EXIT_CONFLICTS)
+    else:
+        rep.finish(EXIT_OK)
+    return rep
+
+
+def cmd_batch_export(args) -> Report:
+    rep = Report(json_mode=bool(getattr(args, "json", False)),
+                 title="批量打包本机资产（workspace）")
+    try:
+        registry = load_registry(getattr(args, "registry", None))
+        entries = filter_registry_entries(registry,
+                                          getattr(args, "only", None),
+                                          getattr(args, "exclude", None))
+    except RegistryError as exc:
+        rep.error(str(exc))
+        rep.finish(exc.exit_code)
+        return rep
+
+    rep.set_data("registry", str(registry.path))
+    rep.set_data("project_count", len(entries))
+
+    # 口令：批量默认共用一个。逐项目不同口令用 --per-project-passphrase。
+    per_project = getattr(args, "per_project_passphrase", False)
+    shared_passphrase: str | None = None
+    temp_pass_file: str | None = None
+
+    if not per_project:
+        # 已给 --passphrase-file：直接复用
+        pf = getattr(args, "passphrase_file", None)
+        if pf:
+            temp_pass_file = None  # 用户自己的文件，不归我们删
+        else:
+            try:
+                shared_passphrase = obtain_passphrase(confirm=True, source_file=None)
+            except PassphraseAborted as exc:
+                rep.say(str(exc))
+                rep.finish(EXIT_REFUSED)
+                return rep
+            try:
+                temp_pass_file, _ = _write_temp_passphrase(shared_passphrase)
+            except OSError as exc:
+                rep.error(f"写临时口令文件失败：{exc}")
+                rep.finish(EXIT_ERROR)
+                return rep
+
+    results: list[dict] = []
+    success_count = 0
+    failure_count = 0
+
+    for entry in entries:
+        rep.say("")
+        rep.say(f"  [{entry.name}] 打包中…")
+        # proj_marker_start 指向「打包中…」那行，执行完覆盖成带状态的标题
+        proj_marker_start = len(rep.lines) - 1
+
+        if not entry.resolved.is_dir():
+            rep.error(f"[{entry.name}] 路径不存在：{entry.resolved}")
+            results.append({"name": entry.name, "exit": EXIT_USAGE,
+                            "path": str(entry.resolved), "package": None})
+            failure_count += 1
+            continue
+
+        # 确定本次口令来源
+        if per_project:
+            try:
+                pp = obtain_passphrase(confirm=True, source_file=None)
+            except PassphraseAborted as exc:
+                rep.warn(f"[{entry.name}] 跳过：{exc}")
+                results.append({"name": entry.name, "exit": EXIT_REFUSED,
+                                "path": str(entry.resolved), "package": None})
+                failure_count += 1
+                continue
+            try:
+                pf_entry, _ = _write_temp_passphrase(pp)
+            except OSError as exc:
+                rep.error(f"[{entry.name}] 写临时口令文件失败：{exc}")
+                results.append({"name": entry.name, "exit": EXIT_ERROR,
+                                "path": str(entry.resolved), "package": None})
+                failure_count += 1
+                continue
+        else:
+            pf_entry = getattr(args, "passphrase_file", None) or temp_pass_file
+
+        try:
+            sub_args = _make_project_args(args, str(entry.resolved),
+                                          profile=entry.profile,
+                                          passphrase_file=pf_entry)
+            sub_rep = cmd_export(sub_args)
+        except (ManifestError, ExportError, EnvHealthError, PassphraseAborted) as exc:
+            rep.error(f"[{entry.name}] {exc}")
+            results.append({"name": entry.name, "exit": getattr(exc, "exit_code", EXIT_ERROR),
+                            "path": str(entry.resolved), "package": None})
+            failure_count += 1
+            if per_project:
+                Path(pf_entry).unlink(missing_ok=True)
+            continue
+        except OSError as exc:
+            rep.error(f"[{entry.name}] {type(exc).__name__}: {exc}")
+            results.append({"name": entry.name, "exit": EXIT_ERROR,
+                            "path": str(entry.resolved), "package": None})
+            failure_count += 1
+            if per_project:
+                Path(pf_entry).unlink(missing_ok=True)
+            continue
+
+        # 回收单项目报告的内容
+        exit_code = sub_rep.exit_code
+        package_path = sub_rep.data.get("package")
+        results.append({"name": entry.name, "exit": exit_code,
+                        "path": str(entry.resolved), "package": package_path})
+        # 去掉「打包中…」那行，换成带状态标记的标题
+        rep.lines[proj_marker_start] = f"  [{entry.name}] {'✓' if exit_code == 0 else '✗'} exit={exit_code}"
+        for line in sub_rep.lines:
+            rep.lines.append("    " + line)
+        for w in sub_rep.warnings:
+            rep.warn(f"[{entry.name}] {w}")
+        for e in sub_rep.errors:
+            rep.error(f"[{entry.name}] {e}")
+        if exit_code == 0:
+            success_count += 1
+        else:
+            failure_count += 1
+
+        if per_project:
+            Path(pf_entry).unlink(missing_ok=True)
+
+    # 清理共享临时口令文件
+    if temp_pass_file:
+        Path(temp_pass_file).unlink(missing_ok=True)
+
+    rep.set_data("results", results)
+    rep.say("")
+    rep.say(f"  汇总：{len(results)} 个项目，{success_count} 成功，{failure_count} 失败")
+    if failure_count == 0:
+        rep.say("  全部打包成功。把各项目的 .enc 拷到新电脑 → git clone → batch import")
+        rep.finish(EXIT_OK)
+    else:
+        rep.error(f"{failure_count} 个项目失败，其余成功。失败的请单独排查。")
+        rep.finish(EXIT_ERROR)
+    return rep
+
+
+def cmd_batch_verify(args) -> Report:
+    rep = Report(json_mode=bool(getattr(args, "json", False)),
+                 title="批量校验迁移包（不落盘）")
+    try:
+        registry = load_registry(getattr(args, "registry", None))
+        entries = filter_registry_entries(registry,
+                                          getattr(args, "only", None),
+                                          getattr(args, "exclude", None))
+    except RegistryError as exc:
+        rep.error(str(exc))
+        rep.finish(exc.exit_code)
+        return rep
+
+    rep.set_data("registry", str(registry.path))
+    rep.set_data("project_count", len(entries))
+
+    # verify 需要口令但不需要 confirm
+    pf = getattr(args, "passphrase_file", None)
+    temp_pass_file: str | None = None
+    shared_passphrase: str | None = None
+    if not pf:
+        try:
+            shared_passphrase = obtain_passphrase(confirm=False, source_file=None,
+                                                  enforce_min=False)
+        except PassphraseAborted as exc:
+            rep.say(str(exc))
+            rep.finish(EXIT_REFUSED)
+            return rep
+        try:
+            temp_pass_file, _ = _write_temp_passphrase(shared_passphrase)
+        except OSError as exc:
+            rep.error(f"写临时口令文件失败：{exc}")
+            rep.finish(EXIT_ERROR)
+            return rep
+        pf = temp_pass_file
+
+    results: list[dict] = []
+    success_count = 0
+    failure_count = 0
+
+    for entry in entries:
+        rep.say("")
+        rep.say(f"  [{entry.name}] 校验中…")
+
+        if not entry.resolved.is_dir():
+            rep.error(f"[{entry.name}] 路径不存在：{entry.resolved}")
+            results.append({"name": entry.name, "exit": EXIT_USAGE, "verified": False})
+            failure_count += 1
+            continue
+
+        # 找该项目的 .enc 包：取产物目录里最新的
+        try:
+            manifest = load_manifest(entry.resolved)
+            artifacts = entry.resolved / manifest.artifacts_dir
+        except ManifestError:
+            artifacts = entry.resolved / ".migrate"
+
+        candidates = sorted(
+            (p for p in artifacts.glob("*.enc") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+        )
+        if not candidates:
+            rep.error(f"[{entry.name}] {artifacts} 下没有 .enc 包。先 batch export。")
+            results.append({"name": entry.name, "exit": EXIT_USAGE, "verified": False})
+            failure_count += 1
+            continue
+
+        package = candidates[-1]  # 最新的
+        # proj_marker_start 指向「校验中…」那行，执行完覆盖成带状态的标题
+        proj_marker_start = len(rep.lines) - 1
+
+        try:
+            sub_args = _NS(root=str(entry.resolved),
+                           json=getattr(args, "json", False),
+                           package=str(package),
+                           passphrase_file=pf)
+            sub_rep = cmd_verify(sub_args)
+        except (PackageError, CryptoError, PassphraseAborted) as exc:
+            rep.error(f"[{entry.name}] {exc}")
+            results.append({"name": entry.name, "exit": getattr(exc, "exit_code", EXIT_ERROR),
+                            "verified": False, "package": str(package)})
+            failure_count += 1
+            continue
+
+        exit_code = sub_rep.exit_code
+        results.append({"name": entry.name, "exit": exit_code,
+                        "verified": exit_code == 0, "package": str(package)})
+        rep.lines[proj_marker_start] = f"  [{entry.name}] {'✓' if exit_code == 0 else '✗'} {package.name}  exit={exit_code}"
+        for line in sub_rep.lines:
+            rep.lines.append("    " + line)
+        for w in sub_rep.warnings:
+            rep.warn(f"[{entry.name}] {w}")
+        for e in sub_rep.errors:
+            rep.error(f"[{entry.name}] {e}")
+        if exit_code == 0:
+            success_count += 1
+        else:
+            failure_count += 1
+
+    if temp_pass_file:
+        Path(temp_pass_file).unlink(missing_ok=True)
+
+    rep.set_data("results", results)
+    rep.say("")
+    rep.say(f"  汇总：{len(results)} 个项目，{success_count} 成功，{failure_count} 失败")
+    if failure_count == 0:
+        rep.finish(EXIT_OK)
+    else:
+        rep.error(f"{failure_count} 个包校验失败。")
+        rep.finish(EXIT_ERROR)
+    return rep
+
+
+def cmd_batch_import(args) -> Report:
+    rep = Report(json_mode=bool(getattr(args, "json", False)),
+                 title="批量导入迁移包")
+    try:
+        registry = load_registry(getattr(args, "registry", None))
+        entries = filter_registry_entries(registry,
+                                          getattr(args, "only", None),
+                                          getattr(args, "exclude", None))
+    except RegistryError as exc:
+        rep.error(str(exc))
+        rep.finish(exc.exit_code)
+        return rep
+
+    rep.set_data("registry", str(registry.path))
+    rep.set_data("project_count", len(entries))
+
+    pf = getattr(args, "passphrase_file", None)
+    temp_pass_file: str | None = None
+    shared_passphrase: str | None = None
+    if not pf:
+        try:
+            shared_passphrase = obtain_passphrase(confirm=False, source_file=None,
+                                                  enforce_min=False)
+        except PassphraseAborted as exc:
+            rep.say(str(exc))
+            rep.finish(EXIT_REFUSED)
+            return rep
+        try:
+            temp_pass_file, _ = _write_temp_passphrase(shared_passphrase)
+        except OSError as exc:
+            rep.error(f"写临时口令文件失败：{exc}")
+            rep.finish(EXIT_ERROR)
+            return rep
+        pf = temp_pass_file
+
+    on_conflict = getattr(args, "on_conflict", "skip")
+    dry_run = getattr(args, "dry_run", False)
+    results: list[dict] = []
+    success_count = 0
+    failure_count = 0
+
+    for entry in entries:
+        rep.say("")
+        rep.say(f"  [{entry.name}] 导入中…")
+
+        if not entry.resolved.is_dir():
+            rep.error(f"[{entry.name}] 路径不存在：{entry.resolved}")
+            results.append({"name": entry.name, "exit": EXIT_USAGE, "imported": False})
+            failure_count += 1
+            continue
+
+        # 找该项目的 .enc 包
+        try:
+            manifest = load_manifest(entry.resolved)
+            artifacts = entry.resolved / manifest.artifacts_dir
+        except ManifestError:
+            artifacts = entry.resolved / ".migrate"
+
+        candidates = sorted(
+            (p for p in artifacts.glob("*.enc") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+        )
+        if not candidates:
+            rep.error(f"[{entry.name}] {artifacts} 下没有 .enc 包。先把包拷过来。")
+            results.append({"name": entry.name, "exit": EXIT_USAGE, "imported": False})
+            failure_count += 1
+            continue
+
+        package = candidates[-1]
+        # proj_marker_start 指向「导入中…」那行，执行完覆盖成带状态的标题
+        proj_marker_start = len(rep.lines) - 1
+
+        try:
+            sub_args = _make_project_args(args, str(entry.resolved),
+                                          profile=entry.profile,
+                                          passphrase_file=pf,
+                                          package=str(package),
+                                          on_conflict=on_conflict,
+                                          dry_run=dry_run)
+            sub_rep = cmd_import(sub_args)
+        except (PackageError, CryptoError, EnvHealthError, PassphraseAborted) as exc:
+            rep.error(f"[{entry.name}] {exc}")
+            results.append({"name": entry.name, "exit": getattr(exc, "exit_code", EXIT_ERROR),
+                            "imported": False, "package": str(package)})
+            failure_count += 1
+            continue
+
+        exit_code = sub_rep.exit_code
+        results.append({"name": entry.name, "exit": exit_code,
+                        "imported": exit_code == 0, "package": str(package)})
+        rep.lines[proj_marker_start] = f"  [{entry.name}] {'✓' if exit_code == 0 else '✗'} {package.name}  exit={exit_code}"
+        for line in sub_rep.lines:
+            rep.lines.append("    " + line)
+        for w in sub_rep.warnings:
+            rep.warn(f"[{entry.name}] {w}")
+        for e in sub_rep.errors:
+            rep.error(f"[{entry.name}] {e}")
+        if exit_code == 0:
+            success_count += 1
+        else:
+            failure_count += 1
+
+    if temp_pass_file:
+        Path(temp_pass_file).unlink(missing_ok=True)
+
+    rep.set_data("results", results)
+    rep.say("")
+    rep.say(f"  汇总：{len(results)} 个项目，{success_count} 成功，{failure_count} 失败")
+    if failure_count == 0:
+        rep.say("  全部导入成功。逐项目跑 manifest 里的 verify 命令确认环境可用。")
+        rep.finish(EXIT_OK)
+    else:
+        rep.error(f"{failure_count} 个项目导入失败。成功的已落地，失败的用单项目 import 逐个排查。")
+        rep.finish(EXIT_ERROR)
+    return rep
+
+
+def _cmd_batch(args) -> Report:
+    action = args.action
+    if action == "init":
+        return cmd_batch_init(args)
+    if action == "list":
+        return cmd_batch_list(args)
+    if action == "plan":
+        return cmd_batch_plan(args)
+    if action == "export":
+        return cmd_batch_export(args)
+    if action == "verify":
+        return cmd_batch_verify(args)
+    if action == "import":
+        return cmd_batch_import(args)
+    rep = Report(json_mode=bool(getattr(args, "json", False)))
+    rep.error(f"未知 batch 子命令：{action}")
+    rep.finish(EXIT_USAGE)
+    return rep
+
+
 # ── 参数解析 ────────────────────────────────────────────────────────────
 
 
@@ -847,6 +1438,36 @@ def build_parser() -> argparse.ArgumentParser:
                           help="server import 时的 .enc 包路径")
     p_server.add_argument("--passphrase-file", default=None)
 
+    # ── 批量换机 ──
+    # 注册表 ~/.migrate-registry.toml 列出要一起换机的项目。batch 子命令组
+    # 逐项目复用单项目逻辑，一份口令、一份报告、一份退出码。
+    p_batch = sub.add_parser("batch", parents=[common],
+                             help="批量换机：按注册表逐项目 plan/export/verify/import")
+    p_batch.add_argument("action", choices=["init", "list", "plan", "export", "verify", "import"])
+    p_batch.add_argument("--registry", default=None,
+                         help=f"注册表路径（默认 {DEFAULT_REGISTRY_PATH}）")
+    p_batch.add_argument("--only", nargs="*", default=None,
+                         help="只处理列出的项目 name（可多个）")
+    p_batch.add_argument("--exclude", nargs="*", default=None,
+                         help="排除列出的项目 name（可多个）")
+    p_batch.add_argument("--force", action="store_true",
+                         help="init 时覆盖已存在的注册表")
+    p_batch.add_argument("--print", action="store_true", dest="print_only",
+                         help="init 时只打印不落盘")
+    # export / verify / import 共享的口令与冲突参数
+    p_batch.add_argument("--passphrase-file", default=None,
+                         help="从文件读口令（批量默认所有项目共用）")
+    p_batch.add_argument("--per-project-passphrase", action="store_true",
+                         dest="per_project_passphrase",
+                         help="export 时逐项目交互输入口令（默认共用一个）")
+    p_batch.add_argument("--profile", default=argparse.SUPPRESS,
+                         help="覆盖所有项目的 profile（注册表条目未写 profile 时生效）")
+    p_batch.add_argument("--on-conflict", default="skip",
+                         choices=list(ON_CONFLICT_MODES),
+                         help="import 时目标已存在时的处理（默认 skip）")
+    p_batch.add_argument("--dry-run", action="store_true",
+                         help="import 时只打印计划，不写任何文件")
+
     return parser
 
 
@@ -863,10 +1484,15 @@ def main(argv: list[str] | None = None) -> int:
         "import": cmd_import,
         "audit": cmd_audit,
         "server": _cmd_server,
+        "batch": _cmd_batch,
     }
     try:
         report = handlers[args.cmd](args)
     except ManifestError as exc:
+        report = Report(json_mode=json_mode)
+        report.error(str(exc))
+        report.finish(exc.exit_code)
+    except RegistryError as exc:
         report = Report(json_mode=json_mode)
         report.error(str(exc))
         report.finish(exc.exit_code)

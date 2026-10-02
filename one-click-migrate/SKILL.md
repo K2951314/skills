@@ -79,6 +79,93 @@ migrate server import <包> --target ubuntu@<新服务器IP>   # 上传暂存目
 
 导入收尾必须打印包内 rebuild/verify 命令，并明确：验证失败就停，不自动重导。
 
+## 批量换机（多项目一次跑完）
+
+换机时往往好几个项目一起换，逐个跑 `migrate plan/export/import` 效率太低。批量换机用一份注册表（`~/.migrate-registry.toml`）列出所有项目，一次跑完。
+
+### 1. 建注册表
+
+```bash
+migrate batch init --print          # 看模板
+migrate batch init                  # 写到 ~/.migrate-registry.toml
+```
+
+注册表不进任何项目仓库——它跨项目，属于「这台机器」的配置。可以放同步盘（OneDrive 等）跨设备携带。改完逐项确认 `path` 存在：
+
+```bash
+migrate batch list                  # 列出注册表里所有项目，标记路径是否存在
+```
+
+注册表示例（路径写法跨设备兼容）：
+
+```toml
+schema_version = 1
+
+[[projects]]
+name = "smart-quotation"
+path = "~/projects/smart-quotation"       # ~ 在 Windows/macOS/Linux 都展开
+# profile = "machine-only"                # 可选：覆盖 manifest 的 profile
+
+[[projects]]
+name = "zk-ai"
+path = "$HOME/AI/ZK-AI"                   # $VAR POSIX 风格
+
+[[projects]]
+name = "dianping"
+path = "%USERPROFILE%/大众点评"            # %VAR% Windows 风格
+```
+
+**路径写法（跨设备兼容，关键）**：
+
+| 写法 | 展开 | 适用场景 |
+|---|---|---|
+| `~/projects/foo` | 用户 home 目录 | 通用，任何 OS 都对 |
+| `$HOME/projects/foo` | POSIX 环境变量 | 通用 |
+| `%USERPROFILE%/projects/foo` | Windows 环境变量 | 注册表放同步盘跨 Windows 设备时最稳 |
+| `D:/projects/foo` | 绝对路径 | 只在当前设备跑时可用，换设备就对不上 |
+
+**注意**：TOML 基本字符串（双引号）里反斜杠是转义字符，Windows 绝对路径必须用正斜杠 `D:/foo` 或 TOML 字面量字符串（单引号 `'D:\foo'`）。
+
+### 2. 批量计划（不打包，先看清单）
+
+```bash
+migrate batch plan                              # 逐项目列清单
+migrate batch plan --only smart-quotation zk-ai # 只跑指定的
+migrate batch plan --exclude dianping           # 排除指定的
+```
+
+`--only` / `--exclude` 按 `name` 过滤。拼错项目名会报错（不会静默跳过——批量执行最怕的就是「以为跑了其实没跑」）。
+
+### 3. 批量导出（旧机器）
+
+```bash
+migrate batch export --passphrase-file pass.txt   # 所有项目共用一个口令
+migrate batch export                              # 交互输入一次口令，所有项目共用
+migrate batch export --per-project-passphrase     # 逐项目不同口令（逐个交互输入）
+```
+
+默认所有项目共用一个口令（交互输入一次，写临时文件传给每个单项目命令，结束后删）。逐项目不同口令用 `--per-project-passphrase`。
+
+一个项目失败不中断其他项目。汇总报告列出每个项目的退出码和产物路径。批量退出码：全成功=0，否则=1。
+
+### 4. 批量校验
+
+```bash
+migrate batch verify --passphrase-file pass.txt
+```
+
+逐项目找产物目录里最新的 `.enc` 包校验（不落盘）。
+
+### 5. 批量导入（新机器）
+
+```bash
+migrate batch import --passphrase-file pass.txt           # 默认 skip（只写不存在的文件）
+migrate batch import --on-conflict overwrite              # 覆盖
+migrate batch import --dry-run                            # 只看计划
+```
+
+逐项目找产物目录里最新的 `.enc` 包导入。新机器上先把所有 `.enc` 包拷到各自项目的产物目录（`.migrate/` 或 manifest 里写的 `artifacts_dir`），再跑批量导入。
+
 ## 退出码
 
 0 成功 / 1 一般错误 / 2 用法输入 / 3 目标冲突（.cmd 据此提供 overwrite 重试）/ 4 口令错或篡改 / 5 完整性失败 / 6 平台依赖缺失 / 7 安全拒绝（server 包禁 merge 等）/ 8 不支持（schema 版本过高等）。
