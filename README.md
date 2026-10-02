@@ -27,7 +27,7 @@ my-skills/
 │   ├── skill-template.md      # SKILL.md 模板（故意不叫 SKILL.md，避免被扫描注册）
 │   └── repository-layout.md   # 命名、存放位置、新增规则、与远程仓库的对应关系
 ├── scripts/
-│   ├── link-skills.ps1        # Windows：建 junction
+│   ├── link-skills.ps1        # Windows：建 junction（.codex / .claude / .workbuddy-ai 三个都挂）
 │   └── link-skills.sh         # macOS / Linux / Git Bash
 └── <skill-name>/
     └── SKILL.md               # 每个技能一个目录
@@ -60,7 +60,11 @@ Git Bash / macOS / Linux：
 bash scripts/link-skills.sh
 ```
 
-挂载结果：`~/.workbuddy-ai/skills/<仓库名>` → 本仓库。
+挂载结果：`<目标>/skills/<仓库名>` → 本仓库。默认一次挂三处 —— `~/.workbuddy-ai/skills`、`~/.codex/skills`、`~/.claude/skills`。新工具要加目标就传给脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1 -TargetRoot "$env:USERPROFILE\<某个工具>\skills"
+```
 
 ## 三条铁律
 
@@ -81,6 +85,7 @@ cd ~/my-skills && bash scripts/link-skills.sh      # Windows 用 scripts\link-sk
 |---|---|
 | `skill-inventory` | 盘点本机技能目录：引用状态 / 重复 / 废弃 / 位置不规范 |
 | `one-click-migrate` | 识别并迁移被 git 排除、但运行必要的数据；换电脑或换服务器时加密打包与校验导入 |
+| `zk-ai-gateway` | 调用本机 ZK-AI 网关上的模型：默认 `zk-auto` 由网关选模型/密钥/兜底，仅旗舰质量、长上下文批量、看图三种情况显式选别名 |
 
 ## 参考
 

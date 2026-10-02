@@ -1,18 +1,37 @@
 #!/usr/bin/env bash
-# 把本仓库挂载到 WorkBuddy AI 的技能扫描目录（整仓一个链接）
-# 用法：bash scripts/link-skills.sh [目标skills目录]
+# 把本仓库挂载到各 AI 工具的技能扫描目录（每个目标一个整仓 junction / symlink）。
+# 工具不同、扫描目录也不同：
+#   WorkBuddy AI : ~/.workbuddy-ai/skills
+#   Codex        : ~/.codex/skills
+#   Claude Code  : ~/.claude/skills
+# 用法：
+#   bash scripts/link-skills.sh                                  # 三个目标都挂
+#   bash scripts/link-skills.sh "$HOME/.codex/skills"            # 只挂一个
+#   bash scripts/link-skills.sh "$HOME/.codex/skills" "$HOME/.claude/skills"
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NAME="$(basename "$REPO")"
-TARGET_ROOT="${1:-$HOME/.workbuddy-ai/skills}"
-TARGET="$TARGET_ROOT/$NAME"
 
-mkdir -p "$TARGET_ROOT"
-
-if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
-  echo "[跳过] 已存在：$TARGET"
+if [ "$#" -gt 0 ]; then
+  TARGET_ROOTS=("$@")
 else
+  TARGET_ROOTS=(
+    "$HOME/.workbuddy-ai/skills"
+    "$HOME/.codex/skills"
+    "$HOME/.claude/skills"
+  )
+fi
+
+for TARGET_ROOT in "${TARGET_ROOTS[@]}"; do
+  TARGET="$TARGET_ROOT/$NAME"
+  mkdir -p "$TARGET_ROOT"
+
+  if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
+    echo "[跳过] 已存在：$TARGET"
+    continue
+  fi
+
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
       # Windows：用 junction，避免 MSYS 软链被拷贝成实体目录
@@ -27,7 +46,7 @@ else
   echo "[完成] 已挂载"
   echo "       链接：$TARGET"
   echo "       指向：$REPO"
-fi
+done
 
 echo ""
 echo "本仓库已注册的技能："

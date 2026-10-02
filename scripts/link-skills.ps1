@@ -1,35 +1,49 @@
-# Mount this repo into the WorkBuddy AI skills scan directory.
-# One junction covers the whole repo, so new skills take effect automatically.
+# Mount this repo into the skill scan directories of AI tools.
+# One junction per target covers the whole repo, so new skills take effect
+# automatically. Tools differ in where they look:
+#   WorkBuddy AI : ~/.workbuddy-ai/skills
+#   Codex        : ~/.codex/skills
+#   Claude Code  : ~/.claude/skills
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1 -TargetRoot "$env:USERPROFILE\.claude\skills"
+#   powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1 -TargetRoot "$env:USERPROFILE\.codex\skills"
 #
 # NOTE: this file is intentionally ASCII-only. Windows PowerShell 5.1 reads
 # BOM-less script files as ANSI/GBK, which corrupts non-ASCII characters and
 # breaks parsing. Keep it ASCII to stay portable.
 
 param(
-    [string]$TargetRoot = (Join-Path $env:USERPROFILE ".workbuddy-ai\skills")
+    [string[]]$TargetRoot = @(
+        (Join-Path $env:USERPROFILE ".workbuddy-ai\skills"),
+        (Join-Path $env:USERPROFILE ".codex\skills"),
+        (Join-Path $env:USERPROFILE ".claude\skills")
+    )
 )
 
 $ErrorActionPreference = 'Stop'
 
-$repo   = Split-Path -Parent $PSScriptRoot
-$name   = Split-Path -Leaf $repo
-$target = Join-Path $TargetRoot $name
+$repo = Split-Path -Parent $PSScriptRoot
+$name = Split-Path -Leaf $repo
 
-if (-not (Test-Path $TargetRoot)) {
-    New-Item -ItemType Directory -Force -Path $TargetRoot | Out-Null
-}
+$allExists = $true
 
-if (Test-Path $target) {
-    Write-Host "[skip] already mounted: $target" -ForegroundColor Yellow
-} else {
-    New-Item -ItemType Junction -Path $target -Target $repo | Out-Null
-    Write-Host "[ok] mounted" -ForegroundColor Green
-    Write-Host "     link   : $target"
-    Write-Host "     target : $repo"
+foreach ($root in $TargetRoot) {
+    $target = Join-Path $root $name
+
+    if (-not (Test-Path $root)) {
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+    }
+
+    if (Test-Path $target) {
+        Write-Host "[skip] already mounted: $target" -ForegroundColor Yellow
+    }
+    else {
+        New-Item -ItemType Junction -Path $target -Target $repo | Out-Null
+        Write-Host "[ok] mounted" -ForegroundColor Green
+        Write-Host "     link   : $target"
+        Write-Host "     target : $repo"
+    }
 }
 
 Write-Host ""
