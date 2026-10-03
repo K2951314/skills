@@ -85,7 +85,7 @@ cd ~/my-skills && bash scripts/link-skills.sh      # Windows 用 scripts\link-sk
 |---|---|
 | `skill-inventory` | 盘点本机技能目录：引用状态 / 重复 / 废弃 / 位置不规范 |
 | `one-click-migrate` | 识别并迁移被 git 排除、但运行必要的数据；换电脑或换服务器时加密打包与校验导入 |
-| `zk-ai-gateway` | 调用本机 ZK-AI 网关上的模型：默认 `zk-auto` 由网关选模型/密钥/兜底，仅旗舰质量、长上下文批量、看图三种情况显式选别名 |
+| `zk-ai-gateway` | 调用 ZK-AI 网关上的模型：默认 `zk-auto` 由网关选模型/密钥/兜底，仅旗舰质量、长上下文批量、看图三种情况显式选别名。入口三选一（本机 8317 / 服务器回环 8318 / 公网 `https://120.53.28.29/zkai`），由 `ZKAI_BASE_URL` 或兜底默认值决定 |
 
 ## 参考
 
