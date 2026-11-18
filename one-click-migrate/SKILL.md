@@ -38,6 +38,8 @@ bash <技能目录>/scripts/migrate <子命令> --root <项目根>
 | 只换服务器 | `server export` 从旧机采集；新机 `server import` 上传暂存目录，系统路径人工确认后写入 |
 | 两个一起 | 先 server 后 workspace。顺序反了，新电脑会连向已作废的旧地址 |
 
+**换服务器的必读**：`references/server-migration-pitfalls.md` 是一次真实腾讯云换机（`120.53.28.29` → `211.159.174.204`）的完整踩坑记录。数据搬完只是开始，真正卡住用户的是 SSH 免密、安全组端口、TLS 证书三件事。开工前先读它，特别是第五、六、七节。
+
 ## 标准流程
 
 ### 1. 体检与清单
@@ -96,6 +98,30 @@ migrate server import <包> --target ubuntu@<新服务器IP>   # 上传暂存目
 ```
 
 导入收尾必须打印包内 rebuild/verify 命令，并明确：验证失败就停，不自动重导。
+
+### 5. 换服务器验收（导入之后、停旧机之前）
+
+**数据导入成功不等于换机完成。** 导入后必须走一遍端到端验收，见 `references/server-migration-pitfalls.md` 第九节。三个最容易漏的点：
+
+```bash
+# a) 服务：看 NRestarts，不是只看 Active（Restart=always 会掩盖崩溃循环）
+systemctl show <svc> -p NRestarts
+
+# b) 网络：安全组 80 和 443 都要放行。只开 443 签不出证书（ACME 走 80）
+# c) 公网端到端：必须 curl 真实 URL，返回 200 才算完
+curl -s -o /dev/null -w "%{http_code}\n" https://<IP>/<真实路径>
+```
+
+`curl` 返回 `000` 且耗时 < 0.1s = TCP/TLS 层就断了，别再去查应用日志。详见 pitfalls 第五、六节。
+
+**停旧机前必须查真实流量**，别假设"没人用了"：
+
+```bash
+sudo tail -20 /var/log/caddy/<access>.log      # 有没有活跃请求
+curl -s https://api.ipify.org                  # 对比请求方 IP，判断是否有第三方在用
+```
+
+旧机不停时 cron 仍会跑（`/etc/cron.d/` 里的备份、推云任务可能用旧数据覆盖云端）。详见 pitfalls 第七节。
 
 ## 批量换机（多项目一次跑完）
 
@@ -207,7 +233,7 @@ migrate batch import --dry-run                            # 只看计划
 - 旧格式包（openssl `Salted__` 平铺 tar）：只读兼容，按内容标记判型，报告明示无 HMAC 认证。
 - 脱敏：汇报只出 键名 / 体积 / sha256 前 8 位 / 存在性；禁出值、PEM、token、口令。
 
-细节按需阅读：`references/classification.md`（分类与字段）、`references/package-format.md`（包格式与校验）、`references/conflicts.md`（冲突与确认）、`references/example-smart-quotation.md`（真实项目迁移）。
+细节按需阅读：`references/classification.md`（分类与字段）、`references/package-format.md`（包格式与校验）、`references/conflicts.md`（冲突与确认）、`references/example-smart-quotation.md`（真实项目迁移）、`references/server-migration-pitfalls.md`（换服务器踩坑实录，含 SSH/安全组/TLS/停旧机四类必查项）。
 
 ## 边界
 

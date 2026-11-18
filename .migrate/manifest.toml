@@ -1,0 +1,52 @@
+# ============================================================
+# my-skills · 一键换机声明
+#
+# 只描述「该搬什么」，不放任何密钥值。可提交。
+#
+# 本项目是「技能仓库」：全部技能源码、文档、启动脚本都在 git 里，
+# git clone 即得（引擎也会 blocked 已跟踪文件，不会重复打包）。
+# 所以换机的主体动作不是打包，而是 clone + 挂载：
+#   git clone <repo> && powershell -File scripts\link-skills.ps1
+#
+# 真正「git 不管、又无法重建」的只有一处：AI 工作记忆
+# （.workbuddy-ai/memory/ 的每日日志与长期笔记）。它被 .gitignore 排除，
+# 丢了没有任何远端副本，也无法从代码重建 —— 所以只有它进包。
+#
+# ⚠️ 导入后必须手工做的一步（引擎只搬项目内文件，不碰项目目录外的东西）：
+#   powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1
+#   它把本仓库以 junction 挂进 ~/.workbuddy-ai/skills（以及
+#   ~/.codex/skills、~/.claude/skills），技能才会被各 AI 工具扫描到。
+# ============================================================
+
+schema_version = 1
+project = "my-skills"
+# 产物下沉一层：引擎用 `git check-ignore .migrate`（不带 --no-index）判定产物目录，
+# 而 `.migrate/*` 这种写法匹配不到目录本身（要 `.migrate/` 才行），
+# 且 manifest.toml 就在 .migrate/ 下需要保持可提交。放进 .migrate/artifacts/
+# 这个子目录（内无跟踪文件）即可两全。
+artifacts_dir = ".migrate/artifacts"
+
+rebuild = [
+  "powershell -ExecutionPolicy Bypass -File scripts\\link-skills.ps1",
+]
+verify = [
+  "one-click-migrate\\scripts\\migrate.cmd doctor",
+]
+
+# ── 唯一「git 不管」的资产：AI 工作记忆 ──────────────────────────────
+# 每日工作日志（YYYY-MM-DD.md）与长期项目笔记（MEMORY.md）。
+# 与 .claude/、__pycache__/ 不同：那些是可重建的本机缓存（refuse），
+# 这个是唯一副本的工作记录，丢了不可恢复。
+[[items]]
+id = "work-memory"
+path = ".workbuddy-ai/memory"
+class = "recommended"
+item_type = "dir"
+scope = "workspace"
+on_missing = "warn"
+sensitive = true
+note = "AI 工作记忆：每日日志 + 长期项目笔记。无 git、无远端副本"
+
+# ── 导入时允许写进项目根的路径白名单 ────────────────────────────────
+[merge]
+include = [".workbuddy-ai/memory"]

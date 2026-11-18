@@ -63,6 +63,11 @@ _换机/
 *.tar.gz
 *.zip
 
+# 一键换机：manifest.toml 要入库（只描述「搬什么」，不含密钥值），
+# 其余全是产物——加密包、导入时的明文备份、journal，都不进 git。
+.migrate/*
+!.migrate/manifest.toml
+
 # 数据库与业务数据。技能仓库不携带任何项目的运行数据
 *.db
 *.sqlite
