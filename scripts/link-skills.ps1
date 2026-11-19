@@ -4,6 +4,7 @@
 #   WorkBuddy AI : ~/.workbuddy-ai/skills
 #   Codex        : ~/.codex/skills
 #   Claude Code  : ~/.claude/skills
+#   Doubao/agents: ~/.agents/skills
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1
@@ -17,7 +18,8 @@ param(
     [string[]]$TargetRoot = @(
         (Join-Path $env:USERPROFILE ".workbuddy-ai\skills"),
         (Join-Path $env:USERPROFILE ".codex\skills"),
-        (Join-Path $env:USERPROFILE ".claude\skills")
+        (Join-Path $env:USERPROFILE ".claude\skills"),
+        (Join-Path $env:USERPROFILE ".agents\skills")
     )
 )
 

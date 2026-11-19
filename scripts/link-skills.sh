@@ -4,8 +4,9 @@
 #   WorkBuddy AI : ~/.workbuddy-ai/skills
 #   Codex        : ~/.codex/skills
 #   Claude Code  : ~/.claude/skills
+#   豆包/agents  : ~/.agents/skills
 # 用法：
-#   bash scripts/link-skills.sh                                  # 三个目标都挂
+#   bash scripts/link-skills.sh                                  # 四个目标都挂
 #   bash scripts/link-skills.sh "$HOME/.codex/skills"            # 只挂一个
 #   bash scripts/link-skills.sh "$HOME/.codex/skills" "$HOME/.claude/skills"
 set -euo pipefail
@@ -20,6 +21,7 @@ else
     "$HOME/.workbuddy-ai/skills"
     "$HOME/.codex/skills"
     "$HOME/.claude/skills"
+    "$HOME/.agents/skills"
   )
 fi
 
