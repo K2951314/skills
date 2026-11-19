@@ -25,10 +25,13 @@ my-skills/
 ├── .gitignore
 ├── docs/
 │   ├── skill-template.md      # SKILL.md 模板（故意不叫 SKILL.md，避免被扫描注册）
-│   └── repository-layout.md   # 命名、存放位置、新增规则、与远程仓库的对应关系
+│   ├── repository-layout.md   # 命名、存放位置、新增规则、与远程仓库的对应关系
+│   └── verification.md        # 验证与调试：判据口径、单点命令、已知假绿/假红
 ├── scripts/
 │   ├── link-skills.ps1        # Windows：建 junction（.codex / .claude / .workbuddy-ai / .agents 四个都挂）
 │   └── link-skills.sh         # macOS / Linux / Git Bash
+├── tools/
+│   └── verify_all.py          # 一键验收：所有技能跑正例+负例，给出退出码语义证据
 └── <skill-name>/
     └── SKILL.md               # 每个技能一个目录
 ```
@@ -78,9 +81,17 @@ powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1 -TargetRoot "$e
 git clone https://github.com/K2951314/skills.git ~/my-skills
 cd ~/my-skills && bash scripts/link-skills.sh      # Windows 用 scripts\link-skills.ps1
 py -3.13 skill-inventory/scripts/portability_lint.py   # 换机后必跑：抓盘符硬编码 / 版本声明 / 漏挂载
+py -3.13 tools/verify_all.py                           # 再跑一遍全量验收（13 项，含负例）
 ```
 
 技能正文与脚本里**不要写死盘符路径**：项目定位一律走环境变量（如 `SQ_HOME` / `SS_HOME`，设了就必须有效）+ 常见根探测，找不到中文报错。写死盘符 = 换机即死（实测踩过）。
+
+## 验证与调试
+
+一条命令确认「这些技能现在能不能用」：`py -3.13 tools/verify_all.py`。
+
+完整判据、单点调试命令、环境变量表、以及实测过的「假绿 / 假红」清单见
+[`docs/verification.md`](docs/verification.md)。
 
 ## 已收录技能
 
@@ -93,6 +104,9 @@ py -3.13 skill-inventory/scripts/portability_lint.py   # 换机后必跑：抓�
 | `tool-selection` | 跨品牌数控刀具替代选型：输入型号返回 ISO 解析、尺寸参数与三菱/泰珂洛/京瓷等可替代刀杆。启动器预检 3.13 解释器与 pycbin，项目定位走 `SS_HOME` |
 | `quotation-helper` | 本地报价查询：直调智能询价报价引擎（绕过 HTTP 鉴权），多公司租户，输出可复制报价文本。项目定位走 `SQ_HOME` |
 | `mitsubishi-inventory` | 三菱刀具实时库存（上海/日本）：金丝雀自检 fail-closed，上游异常绝不返回可疑数字。项目定位走 `SQ_HOME` |
+| `tooling-kit` | 成套配刀：输入加工形态 + 材料 + 粗/半精/精，输出刀杆+刀片+牌号+切削参数；五项互锁全对才出方案。切槽/螺纹明确报「专用刀片未收录」不造假配对。项目定位走 `SS_HOME` |
+| `failure-diagnosis` | 失效对策：崩刃/积屑瘤/振动/寿命短等 14 类现象 → 各品牌样本**原文对策句**（带册/页码）。同义词归一，工序过滤自动带「综合」册。项目定位走 `SS_HOME` |
+| `quote-document` | 报价单/合同生成：型号批量询价后出 docx/pdf/png/xlsx（5 语言、可盖章、自动编号）。走智能询价**导出路由层**（与 GUI 同一条代码路径），默认在库副本上跑、不消耗真实序列。项目定位走 `SQ_HOME` |
 
 ## 参考
 

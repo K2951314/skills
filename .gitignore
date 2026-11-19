@@ -74,3 +74,9 @@ _换机/
 *.sqlite3
 *.dump
 backups/
+
+# 一键验收脚本的临时产物（自动清理，保险起见也忽略）
+.verify-out/
+
+# quote-document 的临时库副本暂存
+quote-document/scripts/.tmp/

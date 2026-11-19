@@ -37,6 +37,8 @@ my-skills/
 ├── scripts/                   挂载脚本。不是技能
 │   ├── link-skills.ps1
 │   └── link-skills.sh
+├── tools/                     仓库级工具。不是技能，不放进任何扫描目录
+│   └── verify_all.py          一键验收：所有技能跑正例+负例
 └── <skill-name>/              一个技能，可单独拷走使用
     ├── SKILL.md               唯一入口
     ├── references/            按需阅读的规则
@@ -51,7 +53,8 @@ my-skills/
 
 仓库根禁止放 `SKILL.md`。否则整个仓库会被注册成一个叫 `my-skills` 的技能。
 
-`docs/skill-template.md` 故意不叫 `SKILL.md`，避免被扫描注册。
+`docs/skill-template.md` 故意不叫 `SKILL.md`，避免被扫描注册。`tools/` 同理：
+只放仓库级工具（验收入口等），**不放 `SKILL.md`**，也不要把它挪进任何 skills 扫描目录。
 
 ## 命名
 
