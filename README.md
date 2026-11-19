@@ -1,6 +1,6 @@
 # my-skills
 
-我的自建 AI 技能仓库（WorkBuddy AI / Claude Code / Codex 通用）。
+我的自建 AI 技能仓库（WorkBuddy AI / Claude Code / Codex / 豆包 通用）。
 
 ## 这个仓库是什么
 
@@ -27,7 +27,7 @@ my-skills/
 │   ├── skill-template.md      # SKILL.md 模板（故意不叫 SKILL.md，避免被扫描注册）
 │   └── repository-layout.md   # 命名、存放位置、新增规则、与远程仓库的对应关系
 ├── scripts/
-│   ├── link-skills.ps1        # Windows：建 junction（.codex / .claude / .workbuddy-ai 三个都挂）
+│   ├── link-skills.ps1        # Windows：建 junction（.codex / .claude / .workbuddy-ai / .agents 四个都挂）
 │   └── link-skills.sh         # macOS / Linux / Git Bash
 └── <skill-name>/
     └── SKILL.md               # 每个技能一个目录
@@ -60,7 +60,7 @@ Git Bash / macOS / Linux：
 bash scripts/link-skills.sh
 ```
 
-挂载结果：`<目标>/skills/<仓库名>` → 本仓库。默认一次挂三处 —— `~/.workbuddy-ai/skills`、`~/.codex/skills`、`~/.claude/skills`。新工具要加目标就传给脚本：
+挂载结果：`<目标>/skills/<仓库名>` → 本仓库。默认一次挂四处 —— `~/.workbuddy-ai/skills`、`~/.codex/skills`、`~/.claude/skills`、`~/.agents/skills`（豆包）。新工具要加目标就传给脚本：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1 -TargetRoot "$env:USERPROFILE\<某个工具>\skills"
@@ -77,15 +77,22 @@ powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1 -TargetRoot "$e
 ```bash
 git clone https://github.com/K2951314/skills.git ~/my-skills
 cd ~/my-skills && bash scripts/link-skills.sh      # Windows 用 scripts\link-skills.ps1
+py -3.13 skill-inventory/scripts/portability_lint.py   # 换机后必跑：抓盘符硬编码 / 版本声明 / 漏挂载
 ```
+
+技能正文与脚本里**不要写死盘符路径**：项目定位一律走环境变量（如 `SQ_HOME` / `SS_HOME`，设了就必须有效）+ 常见根探测，找不到中文报错。写死盘符 = 换机即死（实测踩过）。
 
 ## 已收录技能
 
 | 技能 | 用途 |
 |---|---|
-| `skill-inventory` | 盘点本机技能目录：引用状态 / 重复 / 废弃 / 位置不规范 |
+| `skill-inventory` | 盘点本机技能目录：引用状态 / 重复 / 废弃 / 位置不规范；含换机可移植性 lint（盘符硬编码 / 解释器版本声明 / 挂载覆盖） |
 | `one-click-migrate` | 识别并迁移被 git 排除、但运行必要的数据；换电脑或换服务器时加密打包与校验导入 |
 | `zk-ai-gateway` | 调用 ZK-AI 网关上的模型：默认 `zk-auto` 由网关选模型/密钥/兜底，仅旗舰质量、长上下文批量、看图三种情况显式选别名。入口三选一（本机 8317 / 服务器回环 8318 / 公网 `https://120.53.28.29/zkai`），由 `ZKAI_BASE_URL` 或兜底默认值决定 |
+| `pdf-sample-extraction` | 把 PDF 样本（工业样本/产品目录/规格书）里的表格抽成可信 CSV：先定分母（样本里印了什么）再抽，四层独立校验，过不了的整块隔离。含 5 个通用脚本（单页勘察 / 页清单 / 产出体检 / 回原文校验 / 规格表抽取）与 7 篇版式与踩坑参考 |
+| `tool-selection` | 跨品牌数控刀具替代选型：输入型号返回 ISO 解析、尺寸参数与三菱/泰珂洛/京瓷等可替代刀杆。启动器预检 3.13 解释器与 pycbin，项目定位走 `SS_HOME` |
+| `quotation-helper` | 本地报价查询：直调智能询价报价引擎（绕过 HTTP 鉴权），多公司租户，输出可复制报价文本。项目定位走 `SQ_HOME` |
+| `mitsubishi-inventory` | 三菱刀具实时库存（上海/日本）：金丝雀自检 fail-closed，上游异常绝不返回可疑数字。项目定位走 `SQ_HOME` |
 
 ## 参考
 
