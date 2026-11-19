@@ -60,7 +60,7 @@ def expand_path(raw: str) -> Path:
     """展开 ``~``、``$VAR``、``%VAR%`` 后返回 Path。
 
     刻意只做这三类展开，不调 ``Path.resolve()``：后者会跟随符号链接，
-    把 junction 目标暴露给用户——注册表里写着 ``D:\\foo``，用户以为
+    把 junction 目标暴露给用户——注册表里写着 ``D:\\foo``，用户以为  # lint:allow-path 文档示例
     路径写死了，其实原始写的是 ``~/foo``。
 
     注意：``os.path.expandvars`` 在 POSIX 上展开 ``$VAR``，在 Windows 上
@@ -277,7 +277,7 @@ DRAFT_TEMPLATE = '''# 一键换机注册表 —— 列出要一起换机的项�
 #   ~/projects/foo          ~ 在 Windows/macOS/Linux 都展开
 #   $HOME/projects/foo      POSIX 风格环境变量
 #   %USERPROFILE%/projects/foo   Windows 风格（注册表放同步盘时推荐）
-#   绝对路径 D:/foo 也能用，但换设备就对不上了——除非确定只在当前设备跑
+#   绝对路径（盘符开头）也能用，但换设备就对不上了——除非确定只在当前设备跑
 #
 # name：注册表里的别名，供 --only / --exclude 过滤用，必须是小写 slug
 # profile：可选，覆盖 manifest 里的 --profile（如 machine-only 只换电脑不带数据库）

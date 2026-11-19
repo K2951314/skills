@@ -166,9 +166,9 @@ path = "%USERPROFILE%/大众点评"            # %VAR% Windows 风格
 | `~/projects/foo` | 用户 home 目录 | 通用，任何 OS 都对 |
 | `$HOME/projects/foo` | POSIX 环境变量 | 通用 |
 | `%USERPROFILE%/projects/foo` | Windows 环境变量 | 注册表放同步盘跨 Windows 设备时最稳 |
-| `D:/projects/foo` | 绝对路径 | 只在当前设备跑时可用，换设备就对不上 |
+| `D:/projects/foo` | 绝对路径 | 只在当前设备跑时可用，换设备就对不上 | <!-- lint:allow-path 反例教学 -->
 
-**注意**：TOML 基本字符串（双引号）里反斜杠是转义字符，Windows 绝对路径必须用正斜杠 `D:/foo` 或 TOML 字面量字符串（单引号 `'D:\foo'`）。
+**注意**：TOML 基本字符串（双引号）里反斜杠是转义字符，Windows 绝对路径必须用正斜杠 `D:/foo` 或 TOML 字面量字符串（单引号 `'D:\foo'`）。 <!-- lint:allow-path 语法示例 -->
 
 ### 2. 批量计划（不打包，先看清单）
 

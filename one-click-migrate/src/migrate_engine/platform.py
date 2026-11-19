@@ -95,8 +95,8 @@ def find_git_bash() -> str | None:
 
     # 2. 常见安装路径
     for base in (
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git",
-        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git",  # lint:allow-path 环境变量兜底默认值
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git",  # lint:allow-path 环境变量兜底默认值
     ):
         for sub in ("bin", "usr/bin"):
             candidate = base / sub / "bash.exe"

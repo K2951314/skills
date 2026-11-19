@@ -1,6 +1,6 @@
 ---
 name: skill-inventory
-description: 盘点本机 AI 工具的技能目录，逐项确认哪些技能被实际加载或引用，识别内容重复、已废弃、功能重叠与位置不规范的技能，并给出清理或迁移建议。当用户说「盘点技能」「整理技能」「检查技能目录」「技能重复了」「技能不生效」「哪些技能没在用」「清理技能」时使用。不用于创建或修改单个技能的内容。
+description: 盘点本机 AI 工具的技能目录，逐项确认哪些技能被实际加载或引用，识别内容重复、已废弃、功能重叠与位置不规范的技能，并给出清理或迁移建议；含换机可移植性 lint（盘符硬编码 / 解释器版本声明 / 挂载覆盖）。当用户说「盘点技能」「整理技能」「检查技能目录」「技能重复了」「技能不生效」「哪些技能没在用」「清理技能」「换机后技能不能用了」「检查技能可移植性」时使用。不用于创建或修改单个技能的内容。
 agent_created: true
 ---
 
@@ -20,6 +20,7 @@ agent_created: true
 | 旧版 WorkBuddy | `~/.workbuddy/.skill-list-cache.json` | 同上 |
 | Claude Code | `~/.claude/skills/` | 无缓存文件，直接看目录 |
 | Codex | `~/.codex/skills/` | 同上 |
+| 豆包 | `~/.agents/skills/` | 同上 |
 
 用脚本读 JSON，不要肉眼扫：
 
@@ -65,6 +66,28 @@ python -c "import json;d=json.load(open('$HOME/.workbuddy-ai/.skill-list-cache.j
 4. 重复 / 废弃 / 重叠清单
 5. 已执行的变更（附校验方式）
 6. 未执行项与原因
+
+## 可移植性 lint（换机后 / 提交前必跑）
+
+技能正文与脚本里的机器绑定内容，换机即失效。用本技能自带脚本一次扫清：
+
+```bash
+py -3.13 skill-inventory/scripts/portability_lint.py          # 扫本仓库 + 查挂载
+py -3.13 skill-inventory/scripts/portability_lint.py --json   # 机器可读
+py -3.13 skill-inventory/scripts/portability_lint.py --skip-mounts
+```
+
+检查三类问题（都是实测踩过的家族）：
+
+| 检查 | 级别 | 说明 |
+|---|---|---|
+| 盘符路径 / 旧机器特征词 | SKILL.md 与 scripts/src 里命中 = ERROR；references 里 = WARN | 项目定位应走环境变量（设了就必须有效）+ 常见根探测；references 允许保留带日期的历史案例 |
+| pyc / 解释器版本绑定未声明 | WARN | 可执行内容依赖 pyc 但 SKILL.md 没显著声明版本约束（版本错会静默返回空） |
+| 挂载覆盖 | 缺挂 / 指向别处 = ERROR | 四个扫描根（.workbuddy-ai / .codex / .claude / .agents）都要挂本仓库 junction |
+
+退出码：0 = 无 ERROR；1 = 有 ERROR；2 = 参数/环境错误。**只报告不修改**。有意保留的历史示例可在该行加 `lint:allow-path` 注释豁免（生成模板类文本不要加豁免标记，会泄漏进用户文件——改写措辞避开盘符）。
+
+lint 结果并入盘点报告。修复死路径属于「修改技能内容」，按边界节走确认后动手。
 
 ## 删除前的硬性检查
 
