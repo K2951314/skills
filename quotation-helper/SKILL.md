@@ -10,15 +10,21 @@ agent_created: true
 
 ## 用法
 
+脚本在本技能目录的 `scripts/quote.py`（`$SKILL` = 本技能目录，即 my-skills 仓库下的 `quotation-helper`）：
+
 ```bash
-py -3.13 "E:/Ingulf/my-skills/quotation-helper/scripts/quote.py" "D4*11*50*d4"
+py -3.13 "$SKILL/scripts/quote.py" "D4*11*50*d4"
 ```
 
 指定公司（多租户）：
 
 ```bash
-py -3.13 "E:/Ingulf/my-skills/quotation-helper/scripts/quote.py" "D4*11*50*d4" --company default
+py -3.13 "$SKILL/scripts/quote.py" "D4*11*50*d4" --company default
 ```
+
+## 项目定位（换机可移植）
+
+脚本自动定位智能询价项目根：**环境变量 `SQ_HOME`（设了就必须有效，设错直接报错，绝不悄悄改用别处的库）**；未设置时按常见根探测：技能仓库的同级目录（my-skills 与项目同父目录）→ 用户 home 下。都找不到会中文报错并提示设置 `SQ_HOME`。技能与脚本里不写任何盘符——写死盘符曾让本技能在换机后整条失效。
 
 ## 输出字段
 
@@ -40,7 +46,7 @@ py -3.13 "E:/Ingulf/my-skills/quotation-helper/scripts/quote.py" "D4*11*50*d4" -
 
 ## 技术细节
 
-报价直接调 `QuotationEngine`，绕过 FastAPI 的认证/限流层，本地快查无需登录。数据库在 `E:/Ingulf/智能询价/quotation.db`。
+报价直接调 `QuotationEngine`，绕过 FastAPI 的认证/限流层，本地快查无需登录。数据库默认 `<项目根>/quotation.db`（项目根按上节定位），可用 `--db` 覆盖。
 
 报价公式（可在后台配置中心改）：`face_price * discount_percent / 100`，默认 55 折。非数值面价（如「¥99」文本）会标 `warnings`，报价按 0 算——**看到 warnings 要留意**。
 

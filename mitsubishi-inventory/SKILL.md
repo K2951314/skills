@@ -16,15 +16,19 @@ agent_created: true
 
 ## 用法
 
+脚本在本技能目录的 `scripts/stock.py`（`$SKILL` = 本技能目录，即 my-skills 仓库下的 `mitsubishi-inventory`）：
+
 ```bash
-py -3.13 "E:/Ingulf/my-skills/mitsubishi-inventory/scripts/stock.py" WNMG080408-MA UC5115
+py -3.13 "$SKILL/scripts/stock.py" WNMG080408-MA UC5115
 ```
 
 只查型号不查材质：
 
 ```bash
-py -3.13 "E:/Ingulf/my-skills/mitsubishi-inventory/scripts/stock.py" WNMG080408-MA
+py -3.13 "$SKILL/scripts/stock.py" WNMG080408-MA
 ```
+
+项目定位与 quotation-helper 相同：**环境变量 `SQ_HOME`（设了就必须有效，设错报错）**；未设置时探测技能仓库同级目录 → 用户 home；找不到中文报错，不写盘符、不静默回退。
 
 ## 输出字段
 
@@ -39,7 +43,7 @@ py -3.13 "E:/Ingulf/my-skills/mitsubishi-inventory/scripts/stock.py" WNMG080408-
 
 1. **401 错误** → 三菱账号凭证失效。设置环境变量或编辑 `config.ini`：
    - `MMC_USERNAME` / `MMC_PASSWORD` / `MMC_COOKIE`
-   - 或 `E:/Ingulf/智能询价` 下的 `config.ini` 的 `[account]` 段
+   - 或智能询价项目根（`SQ_HOME`）下 `config.ini` 的 `[account]` 段
 2. **网络不通** → 本机需能访问三菱官网
 3. **官网改版** → GWT-RPC 解析靠位置启发式，改版后需人工核对 `_extract_stock` 解析逻辑
 
