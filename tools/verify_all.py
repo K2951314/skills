@@ -85,13 +85,19 @@ def _py() -> str:
 
 
 def _assert_interpreter() -> None:
-    """业务技能多数绑定 3.13（pyc / 项目依赖）。版本不对要吵，不能假装通过。"""
+    """业务技能多数绑定 3.13（pyc / 项目依赖）。版本不对要吵，不能假装通过。
+
+    退出码 2 = 脚本自身错误（docs/verification.md 的契约）。注意
+    ``SystemExit("字符串")`` 固定退出 1，必须用整数码 + 自己打印提示。
+    """
     if sys.version_info[:2] != (3, 13):
-        raise SystemExit(
+        print(
             "[解释器版本不对] 当前 Python %d.%d。多数技能依赖 3.13。\n"
             "请用: py -3.13 tools/verify_all.py"
-            % (sys.version_info[0], sys.version_info[1])
+            % (sys.version_info[0], sys.version_info[1]),
+            file=sys.stderr,
         )
+        raise SystemExit(2)
 
 
 def run_case(case: Case) -> Result:
@@ -150,6 +156,16 @@ def _skill(name: str) -> Path:
     return REPO_ROOT / name
 
 
+def _skipped(names: list[str], why: str) -> list[Case]:
+    """项目不可用时，为每条本该执行的用例生成 SKIP 占位，而不是静默省略。
+
+    ``expect == -999`` 会在 main 里被单独收集。以前只有 quotation-helper
+    缺项目时留一条占位，其余技能直接不生成用例——换机后报告仍显示「失败 0」，
+    但十来条用例根本没跑，等于「没测 = 通过」。
+    """
+    return [Case(name=n, argv=[], expect=-999, why=why) for n in names]
+
+
 def build_cases(with_zkai: bool) -> list[Case]:
     cases: list[Case] = []
     sq = _project("SQ_HOME", "backend/smart_quotation/engine.py", "智能询价")
@@ -185,8 +201,9 @@ def build_cases(with_zkai: bool) -> list[Case]:
             env=env_sq, timeout=120,
         ))
     else:
-        cases.append(Case("quotation-helper", ["cmd", "/c", "echo", "skip"],
-                          -999, "未找到智能询价项目"))
+        cases.extend(_skipped(
+            ["quotation-helper/报价", "quotation-helper/无命中"],
+            "未找到智能询价项目（SQ_HOME）：该技能 2 条用例未执行"))
 
     # ── tool-selection ────────────────────────────────────────────
     if ss:
@@ -197,6 +214,10 @@ def build_cases(with_zkai: bool) -> list[Case]:
             expect=0, why="跨品牌替代查询能出刀杆与牌号对照",
             env=env_ss, timeout=180,
         ))
+    else:
+        cases.extend(_skipped(
+            ["tool-selection/替代"],
+            "未找到 smart-selection 项目（SS_HOME）：该技能 1 条用例未执行"))
     # ── tooling-kit ───────────────────────────────────────────────
     if ss:
         cases.append(Case(
@@ -213,6 +234,10 @@ def build_cases(with_zkai: bool) -> list[Case]:
             expect=1, why="专用刀片未收录时必须报缺，不能给假配对",
             env=env_ss, timeout=180,
         ))
+    else:
+        cases.extend(_skipped(
+            ["tooling-kit/成套配刀", "tooling-kit/切槽不造假配对"],
+            "未找到 smart-selection 项目（SS_HOME）：该技能 2 条用例未执行"))
 
     # ── failure-diagnosis ─────────────────────────────────────────
     if ss:
@@ -230,6 +255,10 @@ def build_cases(with_zkai: bool) -> list[Case]:
             expect=1, why="退出码 1 = 无命中（正常语义），不是脚本故障",
             env=env_ss, timeout=120,
         ))
+    else:
+        cases.extend(_skipped(
+            ["failure-diagnosis/崩刃铣削", "failure-diagnosis/无命中"],
+            "未找到 smart-selection 项目（SS_HOME）：该技能 2 条用例未执行"))
 
     # ── quote-document ────────────────────────────────────────────
     if sq:
@@ -307,6 +336,13 @@ def build_cases(with_zkai: bool) -> list[Case]:
             must_not_contain="报价单_默认_VERIFY-006",
             env=env_sq, timeout=120,
         ))
+    else:
+        cases.extend(_skipped(
+            ["quote-document/自检", "quote-document/生成 docx",
+             "quote-document/骑缝章缺主章", "quote-document/无命中",
+             "quote-document/公司不存在", "quote-document/同名不覆盖",
+             "quote-document/locale 生效"],
+            "未找到智能询价项目（SQ_HOME）：该技能 7 条用例未执行"))
     # ── mitsubishi-inventory ──────────────────────────────────────
     if sq:
         # 这条**不是**「应该成功」：上游 401 时技能按设计返回退出码 3 +
@@ -321,6 +357,10 @@ def build_cases(with_zkai: bool) -> list[Case]:
             why="401 时 fail-closed 返回结构化错误（退出码 3）；恢复时返回库存（0）",
             must_contain="diagnostics", env=env_sq, timeout=180,
         ))
+    else:
+        cases.extend(_skipped(
+            ["mitsubishi-inventory/fail-closed 结构化"],
+            "未找到智能询价项目（SQ_HOME）：该技能 1 条用例未执行"))
 
     # ── ZK-AI 侧（可选）──────────────────────────────────────────
     if with_zkai:
@@ -345,6 +385,10 @@ def build_cases(with_zkai: bool) -> list[Case]:
                     expect=0, why="探针能跑（ok=false 也算跑通：退出码 0 表示探针本身正常）",
                     env={"SS_HOME": str(ss)}, timeout=300,
                 ))
+            else:
+                cases.extend(_skipped(
+                    ["zkai/数据新鲜度探针"],
+                    "未找到 smart-selection 项目（SS_HOME）：该探针未执行"))
     return cases
 
 
@@ -377,6 +421,7 @@ def _cleanup_outputs() -> None:
 
 
 def main() -> int:
+    _assert_interpreter()   # 版本闸放这里：作为库导入后调 main() 时同样生效
     ap = argparse.ArgumentParser(description="my-skills 一键验收")
     ap.add_argument("--json", action="store_true", help="机器可读输出")
     ap.add_argument("--only", help="只跑匹配的技能前缀，逗号分隔")
@@ -412,6 +457,9 @@ def main() -> int:
     results.extend(extra)
 
     for case in skipped:
+        # --only 时只保留匹配的占位，别把无关技能的 SKIP 混进 --json 结果
+        if args.only and not case.name.startswith(prefixes):
+            continue
         results.append(Result(case.name, SKIP, case.why, 0.0))
         if not args.only:
             print("- %-46s %5s  %s" % (case.name, "-", case.why))
@@ -446,7 +494,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        _assert_interpreter()
         sys.exit(main())
     except KeyboardInterrupt:
         print("已中断", file=sys.stderr)
