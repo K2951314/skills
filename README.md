@@ -81,10 +81,13 @@ powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1 -TargetRoot "$e
 git clone https://github.com/K2951314/skills.git ~/my-skills
 cd ~/my-skills && bash scripts/link-skills.sh      # Windows 用 scripts\link-skills.ps1
 py -3.13 skill-inventory/scripts/portability_lint.py   # 换机后必跑：抓盘符硬编码 / 版本声明 / 漏挂载
-py -3.13 tools/verify_all.py                           # 再跑一遍全量验收（13 项，含负例）
+py -3.13 tools/verify_all.py                           # 再跑一遍全量验收（正例/负例，项数以输出为准）
 ```
 
 技能正文与脚本里**不要写死盘符路径**：项目定位一律走环境变量（如 `SQ_HOME` / `SS_HOME`，设了就必须有效）+ 常见根探测，找不到中文报错。写死盘符 = 换机即死（实测踩过）。
+
+仓库统一以 LF 入库（`.gitattributes`）：Windows 工作区的 CRLF 会在提交时自动转换，
+`git diff` 里的 CRLF 提示属正常现象，不要为此批量转换整个文件（会产生全量 diff 噪音）。
 
 ## 验证与调试
 
@@ -99,9 +102,9 @@ py -3.13 tools/verify_all.py                           # 再跑一遍全量验�
 |---|---|
 | `skill-inventory` | 盘点本机技能目录：引用状态 / 重复 / 废弃 / 位置不规范；含换机可移植性 lint（盘符硬编码 / 解释器版本声明 / 挂载覆盖） |
 | `one-click-migrate` | 识别并迁移被 git 排除、但运行必要的数据；换电脑或换服务器时加密打包与校验导入 |
-| `zk-ai-gateway` | 调用 ZK-AI 网关上的模型：默认 `zk-auto` 由网关选模型/密钥/兜底，仅旗舰质量、长上下文批量、看图三种情况显式选别名。入口三选一（本机 8317 / 服务器回环 8318 / 公网 `https://120.53.28.29/zkai`），由 `ZKAI_BASE_URL` 或兜底默认值决定 |
+| `zk-ai-gateway` | 调用 ZK-AI 网关上的模型：默认 `zk-auto` 由网关选模型/密钥/兜底，仅旗舰质量、长上下文批量、看图三种情况显式选别名。入口三选一（本机 8317 / 服务器回环 8318 / 公网 `https://<当前公网IP>/zkai`），由 `ZKAI_BASE_URL` 或兜底默认值决定。**公网 IP 会变**：现役地址只在 `zk-ai-gateway/SKILL.md` 一处维护，本表不重复写；换机优先改环境变量，历次地址见 `one-click-migrate/references/config-rewrite-traps.md` |
 | `pdf-sample-extraction` | 把 PDF 样本（工业样本/产品目录/规格书）里的表格抽成可信 CSV：先定分母（样本里印了什么）再抽，四层独立校验，过不了的整块隔离。含 5 个通用脚本（单页勘察 / 页清单 / 产出体检 / 回原文校验 / 规格表抽取）与 7 篇版式与踩坑参考 |
-| `tool-selection` | 跨品牌数控刀具替代选型：输入型号返回 ISO 解析、尺寸参数与三菱/泰珂洛/京瓷等可替代刀杆。启动器预检 3.13 解释器与 pycbin，项目定位走 `SS_HOME` |
+| `tool-selection` | 跨品牌数控刀具替代与型号查询：输入型号返回 ISO 解析、尺寸参数、可互换品牌清单与各品牌牌号；不查报价/库存，不做成套配刀与失效对策。启动器预检 3.13 解释器与 pycbin，项目定位走 `SS_HOME` |
 | `quotation-helper` | 本地报价查询：直调智能询价报价引擎（绕过 HTTP 鉴权），多公司租户，输出可复制报价文本。项目定位走 `SQ_HOME` |
 | `mitsubishi-inventory` | 三菱刀具实时库存（上海/日本）：金丝雀自检 fail-closed，上游异常绝不返回可疑数字。项目定位走 `SQ_HOME` |
 | `tooling-kit` | 成套配刀：输入加工形态 + 材料 + 粗/半精/精，输出刀杆+刀片+牌号+切削参数；五项互锁全对才出方案。切槽/螺纹明确报「专用刀片未收录」不造假配对。项目定位走 `SS_HOME` |

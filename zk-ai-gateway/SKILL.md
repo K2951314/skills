@@ -1,6 +1,6 @@
 ---
 name: zk-ai-gateway
-description: 调用本机 ZK-AI 网关上的模型（OpenAI 兼容接口 /v1/chat/completions）。当用户说「调 ZK-AI」「用网关跑一下」「zk-auto 帮我做」「问一下本地大模型」「用 K3 / kimi-k3 / step-5-preview 处理」「走 ZK-AI 这个别名的模型」「用网关的能力链做长上下文 / 看图」时使用。网关在本机是 127.0.0.1:8317，在服务器（ubuntu@120.53.28.29）上是 127.0.0.1:8318 并有公网入口 https://120.53.28.29/zkai/v1（OpenAI 兼容）。默认一律用 zk-auto（网关会按请求内容自动选模型、选 Key、自动重试与故障转移），只在明确要旗舰质量 / 长上下文批量 / 看图时显式指定别名。不用于直接调用云端 API、不用于修改网关配置与别名、不用于在 skill 内部做多模型流水线编排。
+description: 调用本机 ZK-AI 网关上的模型（OpenAI 兼容接口 /v1/chat/completions）。当用户说「调 ZK-AI」「用网关跑一下」「zk-auto 帮我做」「问一下本地大模型」「用 K3 / kimi-k3 / step-5-preview 处理」「走 ZK-AI 这个别名的模型」「用网关的能力链做长上下文 / 看图」时使用。网关在本机是 127.0.0.1:8317；服务器侧监听回环 8318，公网入口经 Caddy 反代到 `https://<当前服务器>/zkai/v1`（IP 会变，见下表，不要记死）。默认一律用 zk-auto（网关会按请求内容自动选模型、选 Key、自动重试与故障转移），只在明确要旗舰质量 / 长上下文批量 / 看图时显式指定别名。不用于直接调用云端 API、不用于修改网关配置与别名、不用于在 skill 内部做多模型流水线编排。
 agent_created: true
 ---
 
@@ -20,9 +20,33 @@ $base  = if ($env:ZKAI_BASE_URL) { $env:ZKAI_BASE_URL } else { "http://127.0.0.1
 |---|---|---|
 | 本机 Windows | `http://127.0.0.1:8317` | 默认。`.env` 在本机，密钥也读本机环境变量 |
 | 服务器本机（SSH 进去） | `http://127.0.0.1:8318` | 服务器网关只听回环 |
-| 任何地方（走公网） | `https://120.53.28.29/zkai` | 经 Caddy 反代；**必须带 Bearer**，且只放行 `/v1/*` 与 `/health` |
+| 任何地方（走公网） | `https://<当前公网IP>/zkai` | 经 Caddy 反代；**必须带 Bearer**，且只放行 `/v1/*` 与 `/health`。当前 IP 见下方唯一一处记录 |
 
 - 环境变量 `ZKAI_BASE_URL` 已设置就以它为准；否则退回本机 `127.0.0.1:8317`。
+- **公网 IP 会变，别记死**：当前现役是 `115.159.87.18`（`腾讯` 机，SSH 别名 `腾讯`，
+  root 直连，2026-11-16 起）。**这是本仓库唯一一处现役 IP**，其它文档一律用
+  `ZKAI_BASE_URL` 或占位符，不重复抄地址。换机时优先改 `ZKAI_BASE_URL` /
+  `~/.ssh/config` 的 HostName，改完同步本行；历次地址变更记录见
+  `one-click-migrate/references/config-rewrite-traps.md` 的「地址会变」一节。
+- **第一步永远是探测**，不要把超时当「模型慢」（下面这段 bash 自带 `$base` 兜底，
+  独立可跑，不依赖上面 PowerShell 段的变量）：
+
+  ```bash
+  base="${ZKAI_BASE_URL:-http://127.0.0.1:8317}"
+  curl -s -m 8 -o /dev/null -w "%{http_code}\n" "$base/health"
+  # 000 = 连不上（网关没起 / IP 换了 / 安全组没放行），先解决连通再谈请求
+  # 200 = 网关活着；401 只会出现在带鉴权的 /v1/* 上
+  ```
+
+- **公网地址必须写 `https://`**（2026-11-20 实测、2026-11-23 复核）：
+  `http://<当前公网IP>/zkai/health` 返回 **308**，而 OpenAI 兼容 SDK 收到 308
+  会直接报 `API Error: 308 upstream_error`。`https://` 不需要 `-k`——
+  用系统 CA 验证的 curl 实测证书链有效（`/health` 200、`/v1/models` 401 鉴权生效）。
+  加 `-k` 不会出错，但别以为它是必需的；反过来把 http 当成「只是不安全一点」才是真坑。
+  ⚠️ 不同客户端的 CA 存储不同（curl 用系统 CA、Python requests 用 certifi、
+  Node 用内置 CA）：先用目标客户端确认证书信任，再决定是否导入 CA。
+  「另开一个不跳转的纯 HTTP 站点」是 2026-11-16 自签证书过渡期的旧做法，
+  不代表现役配置，不要照搬。
 - 公网入口的 token 与服务器 `/etc/zkai.env` 的 `ZKAI_API_TOKEN` 同一份值。
 - 服务器上 `sq` / `tandian` 等应用走的是**回环** `127.0.0.1:8318`，不经过 Caddy，不消耗公网带宽。
 - 从外网调时注意上传带宽（服务器实测约 150 KB/s），但请求体通常只有几 KB，可忽略；

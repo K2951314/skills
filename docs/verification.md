@@ -5,7 +5,7 @@
 ## 全量验收
 
 ```bash
-py -3.13 tools/verify_all.py                # 13 项技能验收（含负例）
+py -3.13 tools/verify_all.py                # 全量验收（正例 + 负例；项数以实际输出为准）
 py -3.13 tools/verify_all.py --with-zkai    # 追加 ZK-AI 配置体检 + 巡检探针
 py -3.13 tools/verify_all.py --json         # 机器可读
 py -3.13 tools/verify_all.py --only quote-document,failure-diagnosis
@@ -69,6 +69,10 @@ py -3.13 tools/verify_all.py --only quote-document,failure-diagnosis
   判据看 `diagnostics.canary`，不看退出码本身。
 
 ## 改动后必跑
+
+> 下面两条 `cd` 到的是**本仓库之外的兄弟项目**（`SQ_HOME` / `SS_HOME` 指向的目录），
+> 不在 `my-skills` 仓库里。请在包含这两个项目的父目录执行，或改用绝对路径；
+> 在仓库根直接照抄会提示目录不存在。
 
 ```bash
 py -3.13 tools/verify_all.py

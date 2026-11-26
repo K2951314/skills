@@ -38,7 +38,20 @@ bash <技能目录>/scripts/migrate <子命令> --root <项目根>
 | 只换服务器 | `server export` 从旧机采集；新机 `server import` 上传暂存目录，系统路径人工确认后写入 |
 | 两个一起 | 先 server 后 workspace。顺序反了，新电脑会连向已作废的旧地址 |
 
-**换服务器的必读**：`references/server-migration-pitfalls.md` 是一次真实腾讯云换机（`120.53.28.29` → `211.159.174.204`）的完整踩坑记录。数据搬完只是开始，真正卡住用户的是 SSH 免密、安全组端口、TLS 证书三件事。开工前先读它，特别是第五、六、七节。
+**换服务器的必读（两份，各管一段）**：
+
+1. `references/server-migration-pitfalls.md` — **搬迁阶段**。一次真实腾讯云换机
+  （`120.53.28.29` → `211.159.174.204`）的完整记录。数据搬完只是开始，真正卡住人的是
+   SSH 免密、安全组端口、TLS 证书。重点读第五、六、七节。
+2. `references/config-rewrite-traps.md` — **配置阶段**，2026-11-16 第二次换机
+  （旧机 → 新机，具体地址见该文档「地址会变」一节）沉淀。讲的是更阴的一类故障：
+   **服务全绿、日志零错，页面却是坏的**。根因是新机 Caddyfile / `.env` 被「重写」
+   而不是逐块 diff 旧机。含五条必查（`/zkadmin` 路由、`default_sni` 与 WebCrypto、
+   `Sec-Fetch-Mode` 误分流、`navigator.clipboard`、`.env` 里的旧 IP）
+   和「按块 diff 配置」的四件套核对法。
+
+**顺序很重要**：先搬数据（文档 1），再迁配置（文档 2）。反过来会在服务起不来的
+状态下调配置，分不清是数据问题还是配置问题。
 
 ## 标准流程
 
@@ -98,6 +111,11 @@ migrate server import <包> --target ubuntu@<新服务器IP>   # 上传暂存目
 ```
 
 导入收尾必须打印包内 rebuild/verify 命令，并明确：验证失败就停，不自动重导。
+
+**产物目录的忽略规则**：导入会在 `artifacts_dir/` 下备份被覆盖的明文 `.env` / 私钥。
+新机器的 `.gitignore` 未必配好，引擎会在导入时检查并给出告警（`--json` 里看
+`artifacts_ignored`）；看到「没有被 .gitignore 排除」要先补规则再继续，别让
+`git add -A` 把明文备份带进仓库。
 
 ### 5. 换服务器验收（导入之后、停旧机之前）
 
@@ -233,7 +251,7 @@ migrate batch import --dry-run                            # 只看计划
 - 旧格式包（openssl `Salted__` 平铺 tar）：只读兼容，按内容标记判型，报告明示无 HMAC 认证。
 - 脱敏：汇报只出 键名 / 体积 / sha256 前 8 位 / 存在性；禁出值、PEM、token、口令。
 
-细节按需阅读：`references/classification.md`（分类与字段）、`references/package-format.md`（包格式与校验）、`references/conflicts.md`（冲突与确认）、`references/example-smart-quotation.md`（真实项目迁移）、`references/server-migration-pitfalls.md`（换服务器踩坑实录，含 SSH/安全组/TLS/停旧机四类必查项）。
+细节按需阅读：`references/classification.md`（分类与字段）、`references/package-format.md`（包格式与校验）、`references/conflicts.md`（冲突与确认）、`references/example-smart-quotation.md`（真实项目迁移）、`references/server-migration-pitfalls.md`（换服务器**搬迁**踩坑实录，含 SSH/安全组/TLS/停旧机四类必查项）、`references/config-rewrite-traps.md`（换服务器**配置**踩坑：服务全绿但页面坏的五个坑 + 配置 diff 四件套 + 现役 IP 只维护一处的口径）。
 
 ## 边界
 
