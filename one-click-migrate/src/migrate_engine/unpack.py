@@ -25,7 +25,7 @@ from . import EXIT_INTEGRITY, EXIT_REFUSED
 from .crypto import CryptoError, decrypt_blob
 from .env_health import check_env_health
 from .journal import Journal, atomic_commit, journal_path
-from .pack import KIND_SERVER, MAX_FILE_BYTES, MAX_MEMBERS, PACKAGE_FORMAT
+from .pack import EnvHealthError, KIND_SERVER, MAX_FILE_BYTES, MAX_MEMBERS, PACKAGE_FORMAT
 from .scan import sha256_file
 
 SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")

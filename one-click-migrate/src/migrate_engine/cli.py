@@ -528,6 +528,25 @@ def cmd_import(args) -> Report:
         whitelist = None   # 裸克隆：无白名单，由 git tracked 判断兜底
         artifacts_dir = None
 
+    # 导入侧与导出侧对称：导入会在 artifacts_dir 里留下明文 .env / 私钥备份
+    # （cmd_export 的注释写了这条），而导入通常发生在新机器，它的 .gitignore
+    # 未必配好。这里不硬拒绝——裸克隆 / 临时目录不是 git 仓库时
+    # git_ignore_check 无法判断，硬闸会把正常导入也挡掉——但必须显著告警，
+    # 并让 --json 能机读到这个状态。
+    if manifest is not None and not args.dry_run:
+        ignored = plat.git_ignore_check(root, manifest.artifacts_dir)
+        rep.set_data("artifacts_ignored", ignored)
+        if ignored is False:
+            rep.warn(
+                f"产物目录 {manifest.artifacts_dir}/ 没有被 .gitignore 排除——"
+                "本次导入会在这里留下明文 .env / 私钥备份。先加一行 "
+                f"`{manifest.artifacts_dir}/`（或 `.migrate/*`）再继续，"
+                "并确认备份没被 git add -A 带走。"
+            )
+        elif ignored is None:
+            rep.warn("无法确认产物目录是否被忽略规则覆盖（非 git 仓库或无 git），"
+                     "请自行确认明文备份不会被提交。")
+
     def ask_fn(name: str, dst: Path) -> str:
         print(f"  目标已存在：{name}（{human_size(dst.stat().st_size)}）")
         answer = input("  覆盖 / 跳过 / 保留双方 [overwrite/skip/keep-both，默认 skip]: ").strip()

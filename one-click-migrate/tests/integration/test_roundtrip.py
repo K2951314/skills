@@ -66,6 +66,29 @@ def test_roundtrip_into_fresh_clone(project_with_manifest, tmp_path):
             or name == "data/app.db"  # sqlite 快照与原件不同（一致性副本）
 
 
+def test_import_rejects_bad_env_with_readable_error(project_with_manifest, tmp_path,
+                                                    monkeypatch):
+    """导入侧 env 健康检查失败必须抛 EnvHealthError，且一个字节都不落盘。
+
+    这里曾抛未定义的名字（NameError），而 cli 的 except EnvHealthError 捕获不到，
+    用户只看到 traceback。pack 侧在导出时就会拦掉坏 .env，没法从源端构造带病包，
+    所以在导入侧替换检查函数，专门覆盖 apply_restore 里「落盘前再查一次」的分支。
+    """
+    from migrate_engine.pack import EnvHealthError
+    import migrate_engine.unpack as unpack_mod
+
+    result = _export(project_with_manifest)
+    fresh = tmp_path / "clone"
+    fresh.mkdir()
+    (fresh / ".gitignore").write_text(".env\n", encoding="utf-8")
+    monkeypatch.setattr(unpack_mod, "check_env_health",
+                        lambda _data: ["ZKAI_HOST 尾部有 CR"])
+    with pytest.raises(EnvHealthError) as exc:
+        restore_package(result.path, PW, fresh, on_conflict="overwrite")
+    assert any("尾部有 CR" in p for p in exc.value.problems)
+    assert not (fresh / ".env").exists()
+
+
 def test_sqlite_snapshot_is_consistent_and_sidecars_cleared(project_with_manifest, tmp_path):
     # 源库旁边放一个 stale WAL，里面是「旧数据库」的帧
     src_db = project_with_manifest / "data" / "app.db"

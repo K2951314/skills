@@ -41,6 +41,8 @@ coverage/
 .env
 .env.*
 !.env.example
+# 三菱库存/报价脚本可能把账号与连接串写进 config.ini
+config.ini
 secrets.json
 credentials.json
 token.txt

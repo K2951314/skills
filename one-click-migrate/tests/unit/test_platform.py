@@ -62,7 +62,23 @@ def test_git_probes_on_repo(git_project):
 
 
 def test_git_probes_outside_repo(tmp_path):
-    assert plat.git_repo_root(tmp_path) is None
+    """仓库外 → 返回 None。
+
+    ⚠ 不能直接拿 ``tmp_path`` 当「仓库外」：测试进程的 TEMP 可能被上层工具
+    设到某个 Git 仓库里（某些 harness 会把 TEMP 指到项目内的 .tmp 目录，
+    于是 pytest 的 tmp_path 天然就在那个仓库内）。这不是引擎的错——
+    从仓库子目录向上找 .git，本来就该找到；错的是「tmp_path 一定在仓库外」
+    这个测试前提。
+
+    这里反过来：先找 tmp_path 的**第一个不带 .git 的祖先**，在那里现建一个
+    子目录当隔离根。ancestor 上都没有 .git，新子目录自然也不会有。
+    """
+    probe = tmp_path.resolve()
+    while plat.git_repo_root(probe) is not None and probe.parent != probe:
+        probe = probe.parent
+    clean_root = probe / "no-git-anywhere" / "deeper"
+    clean_root.mkdir(parents=True, exist_ok=True)
+    assert plat.git_repo_root(clean_root) is None
 
 
 def sys_python() -> str:
